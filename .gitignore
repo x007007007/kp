@@ -1,0 +1,18 @@
+# Rust 构建产物
+/target
+
+# kp 运行时状态（绝不入库，属于 ~/.local/state/kp 的镜像误放防护）
+sessions.json
+history.jsonl
+*.log
+
+# 环境与本地配置
+.env
+.env.*
+*.local.toml
+
+# 编辑器 / 系统文件
+.DS_Store
+*.swp
+.idea/
+.vscode/

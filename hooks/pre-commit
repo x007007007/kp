@@ -1,0 +1,4 @@
+#!/bin/sh
+# kp pre-commit：提交前强制秘密扫描。
+# 启用：git config core.hooksPath hooks
+exec "$(git rev-parse --show-toplevel)/scripts/check-secrets.sh" "$@"
