@@ -108,6 +108,7 @@ policy = "reject"               # 谁也别想跑第二遍
 
 ```console
 $ git config core.hooksPath hooks   # 启用提交前秘密扫描
+$ make dev-env                      # 进入开发环境：kp = 开发中构建，状态沙箱于 .dev/（退出自动清理）
 $ cargo test
 $ scripts/check-secrets.sh --all    # 手动全量扫描
 ```

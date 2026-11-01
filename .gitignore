@@ -6,6 +6,9 @@ sessions.json
 history.jsonl
 *.log
 
+# dev-env 沙箱（make dev-env / make dev-clean）
+/.dev/
+
 # 环境与本地配置
 .env
 .env.*
