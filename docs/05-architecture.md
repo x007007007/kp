@@ -193,7 +193,7 @@ sequenceDiagram
     D->>D: registry 查询 → 未命中
     D->>D: 写 specs/&lt;name&gt;.json（env 快照, 0600）
     D->>X: new-session -d -s kp-proj-a1b2 -c cwd<br/>"kp _spawn --spec specs/....json"
-    X->>P: 创建 pane；_spawn 应用 env 后 exec 命令<br/>pane pid = 进程组 leader
+    X->>P: 创建 pane；_spawn 应用 env 后 fork 命令并 waitpid<br/>pane pid = 进程组 leader
     D->>X: set-option remain-on-exit on<br/>set-hook pane-died "run-shell -b kp _report ..."
     D->>X: pipe-pane -o -t s "cat >> logs/s.log"
     D->>X: set-option @kp_cwd / @kp_branch / @kp_started
@@ -245,8 +245,8 @@ sequenceDiagram
     participant C as 各 kp client(supervisor)
 
     U->>P: Ctrl-C（tmux 转发 SIGINT 至前台进程组）
-    P->>X: 进程退出 → pane dead（remain-on-exit 保留状态）
-    X->>D: pane-died hook → kp _report s #{pane_dead_status}
+    P->>X: 命令退出；_spawn 屏蔽终止信号存活收尸<br/>waitpid 得到真实退出码（含信号死亡）→ _report 上报
+    X->>D: pane-died hook → kp _report s #{pane_dead_status}（兜底）
     D->>D: registry 标记 exited + history.jsonl 追加<br/>（退出码/时长/argv）
     D->>X: 等待 exit_grace(2s) 后 kill-session s
     X-->>C: 各 tmux attach 返回（会话已不存在）
@@ -340,7 +340,7 @@ stateDiagram-v2
 
 | `trait Engine` 方法 | tmux 调用 / 系统调用 | 说明 |
 |---|---|---|
-| `create` | `new-session -d -s <s> -c <cwd> "kp _spawn --spec <path>"` | pane pid 即进程组 leader，`_spawn` exec 后命令顶替之 |
+| `create` | `new-session -d -s <s> -c <cwd> "kp _spawn --spec <path>"` | `_spawn` fork+waitpid：pane pid 即进程组 leader；退出码由 waitpid 获得 |
 | 观测项设置 | `set-option -t <s> remain-on-exit on`；`set-hook -t <s> pane-died "run-shell -b 'kp _report <s> #{pane_dead_status}'"` | 退出上报（§4.3） |
 | `pipe_log` | `pipe-pane -o -t <s> "cat >> <log_path>"` | 原始流含 ANSI 落盘 |
 | 元数据 | `set-option -t <s> @kp_cwd/@kp_branch/@kp_started/@kp_identity` | reconcile 与 `kp ls` 的 branch 列 |
@@ -418,7 +418,7 @@ tmux < 3.2 时 `pane_dead_status` 不可用 → 退化路径：`_report` 由 hoo
 | A2 | env 走 spec 文件而非命令行/tmux set-environment | 几百个变量经 sh 传参脏且漏；文件可 0600、可复用于 restart |
 | A3 | client = fork attach + WaitExit 轮询的 supervisor | exec 替换会丢失感知退出码的能力（FR1 硬需求） |
 | A4 | 客户端数以 tmux `list-clients` 为事实源 | 异常客户端不留假锁；registry 不记账 |
-| A5 | 退出码经 `pane-died` hook 上报 | 事件驱动替代轮询；daemon 死亡时退化路径已有（pane_exit + reconcile） |
+| A5 | `_spawn` fork+waitpid 主动上报退出码，pane-died hook 兜底 | tmux `#{pane_dead_status}` 对信号死亡返回空；Ctrl-C（FR5 主路径）的 130 只有 waitpid 拿得到；`_spawn` 屏蔽终止信号以存活收尸，子进程经 pre_exec 恢复默认处置 |
 | A6 | reconcile 以 tmux 实况为准 | 注册表只是缓存——崩溃恢复方向单一，无"谁是真相"之争 |
 | A7 | per-session 锁而非全局锁 | stop/restart 慢操作不阻塞其他会话的 spawn |
 | A8 | `kp _report` 复用主 RPC 通道 | 一个协议一套握手，不为 hook 单开旁路 |

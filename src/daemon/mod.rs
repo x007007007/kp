@@ -1,0 +1,660 @@
+mod reconcile;
+
+use crate::engine::Engine;
+use crate::history::{self, HistoryEntry};
+use crate::paths;
+use crate::protocol::{
+    recv_frame, send_frame, ExitInfo, Policy, Request, Response, SessionInfo, SessionSpec,
+    SpawnOutcome, PROTO_VERSION,
+};
+use crate::registry::{Entry, EntryState, Registry, Status};
+use crate::util::now_ms;
+use std::collections::HashMap;
+use std::io::Write as IoWrite;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// 进程退出到 kill-session 的宽限：给 attach 端留出收到 WaitExit 响应的时间窗（架构 §4.3）。
+const EXIT_GRACE_MS: u64 = 2000;
+
+pub struct Ctx {
+    pub eng: Box<dyn Engine>,
+    pub reg: Registry,
+    pub exe: PathBuf,
+    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl Ctx {
+    fn session_lock(&self, name: &str) -> Arc<Mutex<()>> {
+        self.locks
+            .lock()
+            .unwrap()
+            .entry(name.to_string())
+            .or_default()
+            .clone()
+    }
+}
+
+pub fn serve() -> Result<(), String> {
+    let rt = paths::runtime_dir().map_err(|e| e.to_string())?;
+    paths::ensure_dir(&rt).map_err(|e| e.to_string())?;
+    let sock_path = rt.join("daemon.sock");
+    // 单实例锁：已有活 daemon 则静默退出（孵化方只会孵化一个）
+    if sock_path.exists() && UnixStream::connect(&sock_path).is_ok() {
+        return Err("已有 kp daemon 在运行".into());
+    }
+    let _ = std::fs::remove_file(&sock_path);
+    paths::ensure_dir(&paths::logs_dir().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    paths::ensure_dir(&paths::specs_dir().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    let reg = Registry::load(paths::sessions_file().map_err(|e| e.to_string())?);
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ctx = Arc::new(Ctx {
+        eng: crate::engine::engine(),
+        reg,
+        exe,
+        locks: Mutex::new(HashMap::new()),
+    });
+    reconcile::run(&ctx);
+
+    let listener = UnixListener::bind(&sock_path).map_err(|e| format!("绑定 socket 失败: {e}"))?;
+    {
+        let c = ctx.clone();
+        std::thread::spawn(move || janitor_loop(c));
+    }
+    println!("kp daemon: 就绪（{}）", sock_path.display());
+    for stream in listener.incoming().flatten() {
+        let c = ctx.clone();
+        std::thread::spawn(move || handle_conn(c, stream));
+    }
+    Ok(())
+}
+
+fn handle_conn(ctx: Arc<Ctx>, mut stream: UnixStream) {
+    // 协议握手：首帧必须 Hello，版本不匹配直接拒绝（FR7）
+    let first: Request = match recv_frame(&mut stream) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    match first {
+        Request::Hello { version } if version == PROTO_VERSION => {
+            let _ = send_frame(
+                &mut stream,
+                &Response::Hello {
+                    version: PROTO_VERSION,
+                },
+            );
+        }
+        Request::Hello { version } => {
+            let _ = send_frame(
+                &mut stream,
+                &Response::Err {
+                    code: 4,
+                    message: format!(
+                        "协议版本不匹配：client v{version} / daemon v{PROTO_VERSION}，请升级 kp"
+                    ),
+                },
+            );
+            return;
+        }
+        _ => {
+            let _ = send_frame(
+                &mut stream,
+                &Response::Err {
+                    code: 1,
+                    message: "首帧必须是 Hello".into(),
+                },
+            );
+            return;
+        }
+    }
+    loop {
+        let req: Request = match recv_frame(&mut stream) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let resp = dispatch(&ctx, req);
+        if send_frame(&mut stream, &resp).is_err() {
+            return;
+        }
+    }
+}
+
+fn dispatch(ctx: &Ctx, req: Request) -> Response {
+    match req {
+        Request::Ping => Response::Pong,
+        Request::Hello { .. } => Response::Err {
+            code: 1,
+            message: "重复握手".into(),
+        },
+        Request::Spawn { spec } => spawn(ctx, spec),
+        Request::AttachExisting { name } => attach_existing(ctx, &name),
+        Request::RestartByName { name, fresh_env } => restart_by_name(ctx, &name, fresh_env),
+        Request::Stop { name } => stop_one(ctx, &name),
+        Request::StopAll => stop_all(ctx),
+        Request::List => Response::Sessions(list_sessions(ctx)),
+        Request::Status { name } => match ctx.reg.get(&name) {
+            Some(e) => Response::Detail(Some(build_info(ctx, &e, &name))),
+            None => Response::Detail(None),
+        },
+        Request::WaitExit { name, timeout_ms } => wait_exit(ctx, &name, timeout_ms),
+        Request::ReportDone { name, exit_code } => {
+            finalize(ctx, &name, exit_code, "exited");
+            Response::Ok
+        }
+        Request::Clean { history_keep } => clean(ctx, history_keep),
+    }
+}
+
+// ---------- 会话构建 ----------
+
+fn build_info(ctx: &Ctx, entry: &Arc<Entry>, name: &str) -> SessionInfo {
+    let st = entry.st.lock().unwrap().clone();
+    let mut info = SessionInfo {
+        name: name.to_string(),
+        argv: st.spec.argv.clone(),
+        cwd: st.spec.cwd.to_string_lossy().to_string(),
+        branch: st.spec.branch.clone(),
+        policy: Some(st.spec.policy),
+        status: match st.status {
+            Status::Running => "running",
+            Status::Exited => "exited",
+        }
+        .into(),
+        started_at_ms: Some(st.started_at_ms),
+        ended_at_ms: st.ended_at_ms,
+        exit_code: st.exit_code,
+        reason: st.reason.clone(),
+        pane_pid: None,
+        clients: 0,
+        log_path: st.spec.log_path.to_string_lossy().to_string(),
+        identity_hash: st.spec.identity_hash.clone(),
+        project_root: st
+            .spec
+            .project_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
+    if st.status == Status::Running {
+        if let Ok(Some(i)) = ctx.eng.info(name) {
+            info.pane_pid = Some(i.pane_pid);
+            info.clients = i.attached;
+        }
+    }
+    info
+}
+
+fn write_spec_file(spec: &SessionSpec) -> Result<(), String> {
+    if let Some(p) = spec.spec_path.parent() {
+        paths::ensure_dir(p).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(spec).map_err(|e| e.to_string())?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600) // env 快照可能含密钥（架构 §9）
+        .open(&spec.spec_path)
+        .map_err(|e| format!("写 spec 失败: {e}"))?;
+    f.write_all(&json).map_err(|e| e.to_string())
+}
+
+/// 新建会话：写 spec → tmux create → 观测项 → 注册表（架构 §4.1）。
+fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
+    // 同名 tmux 残留（注册表里没有的异常会话）先清掉
+    if let Ok(Some(_)) = ctx.eng.info(&spec.name) {
+        ctx.eng.kill_session(&spec.name)?;
+    }
+    write_spec_file(&spec)?;
+    if let Some(p) = spec.log_path.parent() {
+        paths::ensure_dir(p).map_err(|e| e.to_string())?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&spec.log_path)
+        .map_err(|e| format!("创建日志文件失败: {e}"))?;
+
+    ctx.eng.create(&spec, &ctx.exe)?;
+    let pgid = ctx.eng.info(&spec.name).ok().flatten().map(|i| i.pane_pid);
+    if let Err(e) = ctx.eng.start_obs(&spec, &ctx.exe) {
+        let _ = ctx.eng.kill_session(&spec.name);
+        return Err(format!("设置观测项失败: {e}"));
+    }
+    let name = spec.name.clone();
+    ctx.reg.insert(
+        &name,
+        EntryState {
+            spec,
+            started_at_ms: now_ms(),
+            ended_at_ms: None,
+            exit_code: None,
+            reason: String::new(),
+            status: Status::Running,
+            pgid,
+            history_done: false,
+        },
+    );
+    ctx.reg.persist();
+    let e = ctx.reg.get(&name).expect("刚插入的会话");
+    Ok(build_info(ctx, &e, &name))
+}
+
+// ---------- Spawn 与策略 ----------
+
+fn spawn(ctx: &Ctx, spec: SessionSpec) -> Response {
+    let lock = ctx.session_lock(&spec.name);
+    let _g = lock.lock().unwrap();
+    if let Some(entry) = ctx.reg.get(&spec.name) {
+        let st = entry.st.lock().unwrap().clone();
+        if st.status == Status::Running {
+            let info = build_info(ctx, &entry, &spec.name);
+            return match spec.policy {
+                Policy::Attach => {
+                    let writable = info.clients == 0; // 多读单写：先到先得（架构 §4.2）
+                    Response::Spawn(SpawnOutcome::Attached {
+                        writable,
+                        attach_args: ctx.eng.attach_args(&spec.name, !writable),
+                        info,
+                    })
+                }
+                Policy::Reject => Response::Spawn(SpawnOutcome::Rejected { info }),
+                Policy::Wait => Response::Spawn(SpawnOutcome::Waiting { info }),
+                Policy::New => return spawn_new_instance(ctx, spec),
+                Policy::Restart => return do_restart(ctx, spec),
+            };
+        }
+        // 已退出 → 清理后重建
+        cleanup_dead(ctx, &spec.name);
+    }
+    match create_session(ctx, spec) {
+        Ok(info) => Response::Spawn(SpawnOutcome::Started {
+            writable: true,
+            attach_args: ctx.eng.attach_args(&info.name, false),
+            info,
+        }),
+        Err(e) => Response::Err {
+            code: 1,
+            message: e,
+        },
+    }
+}
+
+/// 策略 new：原名后加序号并行新实例。
+fn spawn_new_instance(ctx: &Ctx, mut spec: SessionSpec) -> Response {
+    for n in 2..=64 {
+        let cand = format!("{}-{n}", spec.name);
+        if ctx.reg.get(&cand).is_some() {
+            continue;
+        }
+        let lock = ctx.session_lock(&cand);
+        let _g = lock.lock().unwrap();
+        if ctx.reg.get(&cand).is_some() {
+            continue;
+        }
+        spec.name = cand;
+        return match create_session(ctx, spec) {
+            Ok(info) => Response::Spawn(SpawnOutcome::Started {
+                writable: true,
+                attach_args: ctx.eng.attach_args(&info.name, false),
+                info,
+            }),
+            Err(e) => Response::Err {
+                code: 1,
+                message: e,
+            },
+        };
+    }
+    Response::Err {
+        code: 1,
+        message: "并行实例过多（>64）".into(),
+    }
+}
+
+fn attach_existing(ctx: &Ctx, name: &str) -> Response {
+    let Some(entry) = ctx.reg.get(name) else {
+        return Response::Err {
+            code: 1,
+            message: format!("没有会话 {name}（kp ls 查看）"),
+        };
+    };
+    let st = entry.st.lock().unwrap().clone();
+    if st.status != Status::Running {
+        return Response::Err {
+            code: 1,
+            message: format!(
+                "会话 {name} 已退出（退出码 {}，原因 {}）；重启: kp restart {name}",
+                st.exit_code.map(|c| c.to_string()).unwrap_or("?".into()),
+                st.reason
+            ),
+        };
+    }
+    let info = build_info(ctx, &entry, name);
+    let writable = info.clients == 0;
+    Response::Attach(SpawnOutcome::Attached {
+        writable,
+        attach_args: ctx.eng.attach_args(name, !writable),
+        info,
+    })
+}
+
+fn restart_by_name(
+    ctx: &Ctx,
+    name: &str,
+    fresh_env: Option<std::collections::BTreeMap<String, String>>,
+) -> Response {
+    let lock = ctx.session_lock(name);
+    let _g = lock.lock().unwrap();
+    let Some(entry) = ctx.reg.get(name) else {
+        return Response::Err {
+            code: 1,
+            message: format!("没有会话 {name}"),
+        };
+    };
+    let st = entry.st.lock().unwrap().clone();
+    let mut spec = st.spec.clone();
+    if let Some(env) = fresh_env {
+        spec.env = env;
+    }
+    if st.status == Status::Running {
+        do_restart(ctx, spec)
+    } else {
+        cleanup_dead(ctx, name);
+        match create_session(ctx, spec) {
+            Ok(info) => Response::Spawn(SpawnOutcome::Started {
+                writable: true,
+                attach_args: ctx.eng.attach_args(&info.name, false),
+                info,
+            }),
+            Err(e) => Response::Err {
+                code: 1,
+                message: e,
+            },
+        }
+    }
+}
+
+/// restart：杀旧组 → 起新实例（同名，env 用快照 spec）→ attach（架构 §4.4）。
+/// 调用方必须已持有该会话的 session_lock。
+fn do_restart(ctx: &Ctx, spec: SessionSpec) -> Response {
+    let name = spec.name.clone();
+    let old_exit = kill_running(ctx, &name, "restart");
+    if let Some(entry) = ctx.reg.get(&name) {
+        append_history_once(&entry, None);
+    }
+    cleanup_dead(ctx, &name);
+    match create_session(ctx, spec) {
+        Ok(info) => Response::Spawn(SpawnOutcome::Restarted {
+            writable: true,
+            attach_args: ctx.eng.attach_args(&name, false),
+            old_exit,
+            info,
+        }),
+        Err(e) => Response::Err {
+            code: 1,
+            message: e,
+        },
+    }
+}
+
+fn stop_one(ctx: &Ctx, name: &str) -> Response {
+    let lock = ctx.session_lock(name);
+    let _g = lock.lock().unwrap();
+    let Some(entry) = ctx.reg.get(name) else {
+        return Response::Err {
+            code: 1,
+            message: format!("没有会话 {name}"),
+        };
+    };
+    let st = entry.st.lock().unwrap().clone();
+    if st.status == Status::Running {
+        kill_running(ctx, name, "stopped");
+        let st2 = entry.st.lock().unwrap().clone();
+        append_history_once(&entry, None);
+        cleanup_dead(ctx, name);
+        Response::Stopped(vec![(name.to_string(), st2.exit_code)])
+    } else {
+        cleanup_dead(ctx, name);
+        Response::Stopped(vec![(name.to_string(), st.exit_code)])
+    }
+}
+
+fn stop_all(ctx: &Ctx) -> Response {
+    let mut out = Vec::new();
+    for name in ctx.reg.names() {
+        match stop_one(ctx, &name) {
+            Response::Stopped(v) => out.extend(v),
+            _ => out.push((name, None)),
+        }
+    }
+    Response::Stopped(out)
+}
+
+// ---------- 杀灭 / 退出 / 清理 ----------
+
+/// 杀整组：TERM → term_timeout → KILL（FR6）。返回退出码（remain-on-exit 可读）。
+fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
+    let entry = ctx.reg.get(name)?;
+    let st = entry.st.lock().unwrap().clone();
+    if st.status != Status::Running {
+        return None;
+    }
+    let pgid = match st.pgid {
+        Some(p) => p,
+        None => ctx
+            .eng
+            .info(name)
+            .ok()
+            .flatten()
+            .map(|i| i.pane_pid)
+            .filter(|p| *p != 0)?,
+    };
+    // 组杀失败（组 leader 已变）时退化为单进程杀
+    if ctx.eng.kill_group(pgid, libc::SIGTERM).is_err() {
+        let _ = unsafe { libc::kill(pgid, libc::SIGTERM) };
+    }
+    if !wait_dead(ctx, name, st.spec.term_timeout) {
+        let _ = ctx.eng.kill_group(pgid, libc::SIGKILL);
+        let _ = unsafe { libc::kill(pgid, libc::SIGKILL) };
+        wait_dead(ctx, name, 3);
+    }
+    let code = ctx
+        .eng
+        .info(name)
+        .ok()
+        .flatten()
+        .and_then(|i| i.pane_dead_status);
+    {
+        let mut g = entry.st.lock().unwrap();
+        if g.status == Status::Running {
+            g.status = Status::Exited;
+            g.exit_code = code;
+            g.ended_at_ms = Some(now_ms());
+            g.reason = reason.to_string();
+        }
+    }
+    entry.cv.notify_all();
+    code
+}
+
+fn wait_dead(ctx: &Ctx, name: &str, timeout_s: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(timeout_s);
+    loop {
+        match ctx.eng.info(name) {
+            Ok(None) => return true,
+            Ok(Some(i)) if i.pane_dead => return true,
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// 退出入账：状态、历史、唤醒 WaitExit（hook 与 janitor 双路径共用，幂等）。
+fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
+    let Some(entry) = ctx.reg.get(name) else {
+        return;
+    };
+    {
+        let mut g = entry.st.lock().unwrap();
+        if g.status != Status::Running {
+            return; // hook 与 janitor 竞争时后者让路
+        }
+        g.status = Status::Exited;
+        g.exit_code = code;
+        g.ended_at_ms = Some(now_ms());
+        g.reason = reason.to_string();
+    }
+    entry.cv.notify_all();
+    append_history_once(&entry, None);
+    ctx.reg.persist();
+}
+
+/// 移除注册条目 + 清 tmux 残留会话 + 删 spec。
+fn cleanup_dead(ctx: &Ctx, name: &str) {
+    ctx.reg.remove(name);
+    let _ = ctx.eng.kill_session(name);
+    let _ = std::fs::remove_file(
+        paths::specs_dir()
+            .map(|d| d.join(format!("{name}.json")))
+            .unwrap_or_default(),
+    );
+    ctx.reg.persist();
+}
+
+/// 历史只入账一次：_spawn 主动上报（finalize）、stop/restart、hook 多路径竞态共用。
+fn append_history_once(entry: &Arc<Entry>, reason: Option<&str>) {
+    let (state, reason_final) = {
+        let mut g = entry.st.lock().unwrap();
+        if g.history_done {
+            return;
+        }
+        g.history_done = true;
+        let r = reason
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| g.reason.clone());
+        (g.clone(), r)
+    };
+    let Ok(p) = paths::history_file() else {
+        return;
+    };
+    let e = HistoryEntry {
+        name: state.spec.name.clone(),
+        argv: state.spec.argv.clone(),
+        cwd: state.spec.cwd.to_string_lossy().to_string(),
+        branch: state.spec.branch.clone(),
+        policy: state.spec.policy,
+        started_at_ms: state.started_at_ms,
+        ended_at_ms: state.ended_at_ms.unwrap_or_else(now_ms),
+        exit_code: state.exit_code,
+        reason: reason_final,
+    };
+    let _ = history::append(&p, &e);
+}
+
+// ---------- 查询类 ----------
+
+fn list_sessions(ctx: &Ctx) -> Vec<SessionInfo> {
+    let mut out = Vec::new();
+    for name in ctx.reg.names() {
+        if let Some(e) = ctx.reg.get(&name) {
+            out.push(build_info(ctx, &e, &name));
+        }
+    }
+    out
+}
+
+fn wait_exit(ctx: &Ctx, name: &str, timeout_ms: u64) -> Response {
+    let Some(entry) = ctx.reg.get(name) else {
+        return Response::Err {
+            code: 1,
+            message: format!("没有会话 {name}"),
+        };
+    };
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut g = entry.st.lock().unwrap();
+    loop {
+        if g.status == Status::Exited {
+            let dur = g
+                .ended_at_ms
+                .unwrap_or_else(now_ms)
+                .saturating_sub(g.started_at_ms);
+            return Response::Exit(Some(ExitInfo {
+                exit_code: g.exit_code,
+                duration_ms: dur,
+            }));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Response::Exit(None);
+        }
+        let (ng, _) = entry.cv.wait_timeout(g, deadline - now).unwrap();
+        g = ng;
+    }
+}
+
+fn clean(ctx: &Ctx, history_keep: u32) -> Response {
+    for (name, st) in ctx.reg.snapshot() {
+        if st.status == Status::Exited {
+            let _ = ctx.eng.kill_session(&name);
+            ctx.reg.remove(&name);
+            let _ = std::fs::remove_file(&st.spec.spec_path);
+        }
+    }
+    if let Ok(p) = paths::history_file() {
+        let _ = history::prune(&p, history_keep as usize);
+    }
+    ctx.reg.persist();
+    Response::Cleaned
+}
+
+// ---------- janitor ----------
+
+fn janitor_loop(ctx: Arc<Ctx>) {
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        for (name, st) in ctx.reg.snapshot() {
+            match st.status {
+                Status::Running => match ctx.eng.info(&name) {
+                    Ok(None) => finalize(&ctx, &name, None, "session-gone"),
+                    Ok(Some(i)) if i.pane_dead => {
+                        finalize(&ctx, &name, i.pane_dead_status, "exited")
+                    }
+                    _ => cap_log(&ctx, &st),
+                },
+                Status::Exited => {
+                    if let Some(ended) = st.ended_at_ms {
+                        if now_ms() >= ended + EXIT_GRACE_MS {
+                            let _ = ctx.eng.kill_session(&name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 日志限额：超限即停 pipe → 截断 → 重开（FR8；轮转 M2）。
+fn cap_log(ctx: &Ctx, st: &EntryState) {
+    let max = st.spec.log_max_mb.saturating_mul(1024 * 1024);
+    if max == 0 {
+        return;
+    }
+    if let Ok(md) = std::fs::metadata(&st.spec.log_path) {
+        if md.len() > max {
+            let _ = ctx.eng.pipe(&st.spec.name, &st.spec.log_path, false);
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&st.spec.log_path);
+            let _ = ctx.eng.pipe(&st.spec.name, &st.spec.log_path, true);
+        }
+    }
+}
