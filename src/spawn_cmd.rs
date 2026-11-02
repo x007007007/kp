@@ -27,6 +27,14 @@ pub fn run(spec_path: &Path) -> i32 {
         }
     };
 
+    // 两阶段启动：等 daemon 设完观测项（remain-on-exit/hook/pipe-pane）再放行，
+    // 否则毫秒级命令会在观测项就位前跑完（go 文件超时 2s 兜底放行）。
+    let go = spec_path.with_extension("json.go");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !go.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
     let keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
     for k in keys {
         std::env::remove_var(k);

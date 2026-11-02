@@ -4,7 +4,7 @@ use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
 /// 重复策略（FR3）。
@@ -27,7 +27,11 @@ pub struct SessionSpec {
     pub cwd: PathBuf,
     /// 启动时全量环境快照，restart 默认复用（FR2）。
     pub env: BTreeMap<String, String>,
+    /// 配置解析出的策略（service > run.default_policy），粘性判定的兜底
     pub policy: Policy,
+    /// CLI -p 显式指定的策略：粘性判定最高优先级；daemon 消费后清空
+    #[serde(default)]
+    pub policy_cli: Option<Policy>,
     pub log_path: PathBuf,
     pub spec_path: PathBuf,
     pub branch: String,
@@ -57,10 +61,13 @@ pub struct SessionInfo {
     pub project_root: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExitInfo {
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
+    /// exited | stopped | restart | session-gone（restart 时客户端自动跟随新实例）
+    #[serde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +96,7 @@ pub enum SpawnOutcome {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
     Hello {
         version: u32,
@@ -126,7 +133,7 @@ pub enum Request {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
     Hello { version: u32 },
     Pong,

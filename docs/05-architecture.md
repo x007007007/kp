@@ -8,7 +8,7 @@ UML 图以 Mermaid 表述；符号约定：**client** = 短生命周期的 `kp` 
 
 单二进制 `kp`，一个程序三种角色：
 
-1. **client**（每次命令）：解析配置 → 算身份 → 与 daemon 通信 → 前台 attach 或收发管理指令；
+1. **client**（每次命令）：解析配置 → 算身份 → 与 daemon 通信 → 前台 attach 或收发指令；`kp` 只做包装（零子命令），管理入口是第二二进制 `kpm`（D10，与 kp 共享本库）；
 2. **daemon**（常驻）：唯一持有会话注册表与杀生权的进程；所有变更（spawn/stop/restart）只经它；
 3. **engine adapter**：把 daemon 的意图翻译成 tmux 命令，藏在 `trait Engine` 后（screen/自研 PTY 可替换）。
 
@@ -50,6 +50,7 @@ flowchart LR
         LG["logs/&lt;session&gt;.log"]
         HJ["history.jsonl"]
         SJ["sessions.json"]
+        PJ["policies.json<br/>（策略粘性，D11）"]
         SP["specs/&lt;session&gt;.json<br/>（env 快照，0600）"]
     end
 
@@ -277,7 +278,7 @@ sequenceDiagram
     end
     D->>X: kill-session s（旧）
     D->>X: new-session 同名重建（复用 spec 文件 = env 快照）
-    Note over C,D: --fresh-env(P1)：client 重算 spec 传 Spawn
+    Note over C,D: --fresh-env(P1)：client 重算 spec 传 Spawn\n其余 attach 端以实例纪元(started_at_ms)判定后自动跟随接入新实例（FR3）
     D->>D: history 记录旧实例退出码
     D-->>C: AttachInfo{ writable: true }
     C->>X: fork + exec tmux -L kp attach -t s
@@ -362,7 +363,7 @@ tmux < 3.2 时 `pane_dead_status` 不可用 → 退化路径：`_report` 由 hoo
 |---|---|---|---|---|
 | `Spawn(spec)` | C→D | `kp CMD...` | 注册表命中→按策略分流；未命中→create | `AttachInfo` / `Rejected` / `Queued` |
 | `AttachInfo{writable,...}` | D→C | | 是否只读 + 横幅元数据 | — |
-| `WaitExit(name, timeout)` | C→D | attach 后 supervisor | 长轮询至会话退出 | `ExitInfo{code,duration}` |
+| `WaitExit(name, timeout)` | C→D | attach 后 supervisor | 长轮询至会话退出；reason=restart 时跟随新实例继续等 | `ExitInfo{code,duration,reason}` |
 | `Stop(name, force)` / `StopAll` | C→D | `kp stop` | 杀组流程（§4.4 前半） | `ExitInfo` |
 | `Restart(name)` | C→D | `kp restart` | §4.4 全程 | `AttachInfo` |
 | `List` / `Status(name)` | C→D | `kp ls/status` | 读注册表 + engine info | 结构化数据 |

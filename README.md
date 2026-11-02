@@ -30,32 +30,46 @@ $ kp make run server 127.0.0.1
 ## 安装
 
 ```console
-$ cargo install kp-cli
+$ cargo install kp-cli      # 安装 kp（包装命令）与 kpm（会话管理）
 ```
 
 依赖 [tmux](https://github.com/tmux/tmux) ≥ 3.0（macOS: `brew install tmux`）。kp 使用独立 tmux socket（`-L kp`），与你自己的 tmux 会话完全隔离。
 
 ## 用法
 
+kp 本体**只做一件事：包装命令**。没有子命令——`kp` 之后的一切都是被运行的命令，因此 `kp ls`、`kp help`、`kp restart` 都能包装同名系统命令。会话管理集中在第二个命令 **`kpm`**：
+
 ```console
-$ kp <命令...>              # 启动 / 按策略接入（核心用法）
+$ kp <命令...>              # 启动 / 按策略接入（核心用法，任何命令）
 $ kp -n NAME <命令...>      # 显式命名会话（默认 kp-<项目>-<NAME>）
 $ kp -p restart <命令...>   # 重复时重启旧实例（改了代码之后）
 ```
 
-管理：
-
 ```console
-$ kp ls                     # 所有会话：状态 / PID / 时长 / 客户端数 / 分支
-$ kp status <name>          # 单会话详情
-$ kp attach <name>          # 接入既有会话
-$ kp logs <name> [-f]       # 纯文本日志（attach 流之外的第二双眼睛）
-$ kp restart <name> [--fresh-env]
-$ kp stop <name> | -a       # 杀整个进程组（TERM → 10s → KILL）
-$ kp history                # 已结束会话的退出码与时长
-$ kp clean                  # 清理已退出会话与过期日志
-$ kp config                 # 打印合并后的配置（排障用）
+$ kpm ls                    # 所有会话：状态 / 策略 / PID / 时长 / 客户端数 / 分支
+$ kpm status <name>         # 单会话详情
+$ kpm attach <name>         # 接入既有会话
+$ kpm logs <name> [-f]      # 纯文本日志（attach 流之外的第二双眼睛）
+$ kpm restart <name> [--fresh-env]
+$ kpm stop <name> | -a      # 杀整个进程组（TERM → 10s → KILL）
+$ kpm history               # 已结束会话的退出码与时长
+$ kpm clean                 # 清理已退出会话与过期日志
+$ kpm config                # 打印合并后的配置（排障用）
 ```
+
+### 重复策略（`-p`）
+
+| 策略 | 行为 | 典型场景 |
+|---|---|---|
+| `attach`（默认） | 接入现有会话 | dev server |
+| `restart` | 优雅退出旧实例 → 起新实例 → 接入 | 代码已变更 |
+| `wait` | 等现有会话退出后再执行 | 构建 / 测试排队 |
+| `new` | 并行再起一个实例（名字加后缀） | 确需第二实例 |
+| `reject` | 直接报错退出（exit 3） | db-migrate 等绝不能跑两遍的命令 |
+
+**策略是粘性的**：对某个服务用 `-p` 设置一次后，以后对同一服务的命令（不带 `-p`）都沿用该策略；再次 `-p` 即改设。优先级：CLI `-p` > 粘性已存 > `.kp.toml` > 默认。
+
+**重启不甩人**：`restart`（无论由哪个窗口发起）时，其他窗口会看到"服务已重启，已重新接入新实例"并自动跟随到新实例，不需要手动重连。
 
 ### 重复策略（`-p`）
 

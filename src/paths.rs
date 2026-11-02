@@ -65,6 +65,11 @@ pub fn history_file() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("history.jsonl"))
 }
 
+/// 策略粘性存储：会话名 → 生效策略（D11）。
+pub fn policies_file() -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("policies.json"))
+}
+
 pub fn daemon_log() -> io::Result<PathBuf> {
     Ok(state_dir()?.join("daemon.log"))
 }

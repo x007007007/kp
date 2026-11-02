@@ -121,6 +121,7 @@ fn minimal_spec(ctx: &Ctx, name: &str) -> crate::protocol::SessionSpec {
         cwd: std::path::PathBuf::from(meta("@kp_cwd")),
         env: Default::default(),
         policy: crate::protocol::Policy::Attach,
+        policy_cli: None,
         log_path: paths::logs_dir()
             .map(|d| d.join(format!("{name}.log")))
             .unwrap_or_default(),

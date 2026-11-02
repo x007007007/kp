@@ -50,10 +50,12 @@
 
 `kp [-n NAME] [-p POLICY] [--] CMD...`
 
+- **kp 没有子命令**（D10）：kp 之后的一切都是被包装的命令及其参数，`kp ls`/`kp help`/`kp restart` 都能包装同名系统命令；管理入口全部在 `kpm`（FR9）。
 - 身份不存在 → 新建会话并在**前台 attach**（行为近似直接运行该命令，但进程活在引擎的 PTY 上）。
 - 身份已存在 → 按 §FR3 策略处理。
 - `--` 之后原样传参；含 `&&`/管道的复合命令需用户显式 `kp -- sh -c '...'`（文档必须显著说明此脚枪）。
 - 退出码：会话进程的退出码透传给**所有** attach 中的客户端后，客户端以该码退出。
+- 内部命令 `_spawn` / `_report` 供 tmux pane 与 hook 调用，不可被包装（fork bomb 防线）。
 
 ### FR2 会话身份（P0）
 
@@ -68,12 +70,15 @@
 | 策略 | 行为 | 典型用途 |
 |---|---|---|
 | `attach`（默认） | 前台接进现有会话 | dev server |
-| `restart` | 杀整组旧进程 → 等退出 → 起新实例 → attach | 代码已变 |
+| `restart` | 优雅退出旧实例（TERM→超时→KILL）→ 起新实例 → attach | 代码已变 |
 | `wait` | 阻塞等现有会话退出，然后正常执行 | 构建/测试 |
 | `new` | 无视现有实例，并行再起一个（名字加后缀） | 双实例、端口冲突需自行负责并警告 |
-| `reject` | 报错退出（exit code 3），提示 `kp ls` | db-migrate 等互斥命令 |
+| `reject` | 报错退出（exit code 3），提示 `kpm ls` | db-migrate 等互斥命令 |
 
-优先级：CLI `-p` > `.kp.toml` 中 service 声明 > 默认 `attach`。
+优先级：CLI `-p` > 粘性已存（D11） > `.kp.toml` 中 service 声明 > 默认 `attach`。
+
+- **粘性策略（D11）**：对某会话名用 `-p` 设置一次后，daemon 将生效策略持久化于 `policies.json`；此后对该服务的命令不带 `-p` 也沿用，直到再次 `-p` 改设。
+- **重启不甩人**：restart（无论哪个窗口发起）时，其他已 attach 窗口以实例纪元（started_at_ms）判定并**自动跟随接入同名新实例**，提示"服务已重启，已重新接入新实例"。
 
 ### FR4 多客户端多读单写（P0）
 
@@ -96,36 +101,36 @@
 - 首次 `kp` 调用自动孵化（ssh-agent 模式）；unix socket：`$XDG_RUNTIME_DIR/kp/daemon.sock`，未设置时退回 `$TMPDIR`（macOS 用户级安全临时目录），socket 与目录权限 0600/0700。
 - daemon 崩溃 → **会话存活**（tmux server 是独立守护进程，持有全部 PTY，不随 kp daemon 死亡）；新 daemon 启动时以 `sessions.json` + tmux `@kp_*` 会话选项对账认领（reconcile，机制见 `docs/05-architecture.md` §4.5）。spawn 时向子进程注入 `KP_SESSION_ID`，用于排查与孤儿归因。
 - 单实例锁；`kp ls` 在 daemon 未运行时输出空列表而非报错。
-- 协议：socket 上的长度前缀 JSON，含版本号握手，client/daemon 版本不匹配时给出明确升级提示。
+- 协议：socket 上的长度前缀 JSON，含版本号握手；版本不匹配（二进制升级后旧 daemon 仍在跑）时**客户端自动重启 daemon** 并重试一次——会话由 tmux 承载不受影响，新 daemon reconcile 接管。
 
 ### FR8 日志（P0 文件 + P1 follow）
 
 - 每会话一个纯文本日志文件（`~/.local/state/kp/logs/<session>.log`），由引擎 `pipe-pane` 流式落盘；attach 看到的实时流（含 ANSI）走引擎本身。
 - 大小上限默认 50MB，超限轮转 `.log.1`（最多一个旧档）。
-- `kp logs <name> [-f] [-n LINES]`（P1 支持 `-f`）。
+- `kpm logs <name> [-f] [-n LINES]`（P1 支持 `-f`）。
 
-### FR9 管理子命令（P0：ls/attach/stop/status；P1：restart/logs/history/clean）
+### FR9 管理命令（P0：ls/attach/stop/status；P1：restart/logs/history/clean/config）
+
+管理入口是**独立的第二二进制 `kpm`**（D10，取代"单二进制子命令"的旧决策）：kp 本体零子命令以保住命令包装的命名空间，管理动作全部收敛到 kpm。
 
 ```
-kp ls                     # 表格：name pid age clients branch policy-origin
-kp status <name>          # 单会话详情：argv、cwd、env 差异摘要、快照时间
-kp attach <name>          # 等价于重复执行原命令
-kp stop <name> | -a       # 按 FR6 杀组
-kp restart <name> [--fresh-env]
-kp logs <name> [-f] [-n LINES]
-kp history                # 已结束会话：exit code、时长、尾部输出若干行
-kp config show            # 打印合并后配置、项目根与生效 services 链（配置排障）
-kp clean                  # 清死会话记录与过期日志
+kpm ls                    # 表格：name / status / policy / pid / age / clients / branch / cmd
+kpm status <name>         # 单会话详情：argv、cwd、env 差异摘要、快照时间
+kpm attach <name>         # 等价于重复执行原命令
+kpm stop <name> | -a      # 按 FR6 杀组
+kpm restart <name> [--fresh-env]
+kpm logs <name> [-f] [-n LINES]
+kpm history               # 已结束会话：exit code、时长、原因（exited/stopped/restart）
+kpm config                # 打印合并后配置、项目根与生效 services 链（配置排障）
+kpm clean                 # 清死会话记录与过期日志
 ```
-
-单二进制 + 子命令，不再造第二个可执行文件（原 `bkrm` 设想并入子命令；如真想要，装个 alias 即可）。
 
 ### FR10 配置文件（P1）
 
 - 两层同 schema：项目 `.kp.toml`（可提交 git）+ 全局 `~/.config/kp/config.toml`；合并链：内置默认 < 全局 < 项目 < `.kp.local.toml`（M2）< CLI。解析在客户端完成，daemon 只收解析结果。
 - 完整 schema、发现规则（`.kp.toml` 向上查找锚定项目根）、合并与校验语义的唯一权威：`docs/04-config.md`。
 - 范围刻意收窄：身份忽略表、服务声明（match/cwd/name/policy）、运行参数。不做 hooks、不做自启、不做 env 注入。
-- `kp config show`：打印合并结果、项目根、生效的 services 候选链——配置排障入口。
+- `kpm config`：打印合并结果、项目根、生效的 services 候选链——配置排障入口。
 
 ```toml
 # 项目 .kp.toml 示例（摘录，完整 schema 见 docs/04-config.md）
@@ -170,8 +175,10 @@ ignore_env = ["PNPM_*"]         # 追加到内置默认忽略表
 | D5 | 杀整组；TERM 默认 10s → KILL | |
 | D6 | daemon：自动孵化 / 安全 socket / 崩溃后会话存活（tmux server 独立），新 daemon reconcile 认领 / 注入 KP_SESSION_ID | 修正于架构设计（tmux server 不随 daemon 死亡） |
 | D7 | v0 引擎 = tmux（Engine trait 隔离） | screen 见 §8 |
-| D8 | 名字 = `kp`（KeeP 缩写；原定 `kp` 因撞名与长度弃用）；单二进制子命令，无第二个可执行文件 | |
+| D8 | 名字 = `kp`（KeeP 缩写；原定 `keep` 因撞名与长度弃用）；`cargo install kp-cli` 产出 `kp` 与 `kpm` 两个二进制 | D10 修订"单二进制"决策 |
 | D9 | 不考虑多用户、Windows v1 不做 | |
+| D10 | kp 零子命令（纯包装），管理独立为 `kpm` | 解决 `kp ls`/`kp help` 等与系统命令的入口冲突 |
+| D11 | 策略粘性：`-p` 设置一次即按会话名持久化（policies.json），之后默认沿用 | 优先级 CLI > 粘性 > .kp.toml > 默认 |
 
 ## 8. 技术选型：tmux vs screen（引擎层）
 

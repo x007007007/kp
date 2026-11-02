@@ -8,7 +8,7 @@
 1. **薄**：只管四件事——身份怎么算、重复命令怎么办、进程怎么杀、日志留多少；
 2. **两层同 schema**：全局与项目文件写法完全一致，项目层只是多一层"项目根锚定"语义；
 3. **失败要响**：未知键 / 类型错 / 越界一律硬错误（exit 2）并指明文件与行号，绝不静默忽略；
-4. **合并可解释**：`kp config show` 永远能回答"这个值从哪一层来"。
+4. **合并可解释**：`kpm config` 永远能回答"这个值从哪一层来"。
 
 ## 1. 文件位置与发现
 
@@ -73,7 +73,7 @@ glob 引擎只实现 `*` 与 `?`，刻意不做 `[]` / `**`——匹配面越小
 
 - 原行为：身份的 cwd 分量 = `realpath(调用目录)`。缺陷：在 `~/proj` 与 `~/proj/packages/api` 各跑一次 `kp make dev` → hash 不同 → 去重失效。
 - **新行为**：找到 `.kp.toml` 时，身份的 cwd 分量 = `realpath(project_root)`；调用目录只用于 `services.cwd` 匹配与 `kp status` 展示。效果：**任意子目录启动同一命令都命中同一会话**。
-- 无 `.kp.toml` → 维持原行为；此时带 `cwd` 限定的 service（`cwd ≠ "*"`）因无锚定基准而跳过，`kp config show` 给出提示。
+- 无 `.kp.toml` → 维持原行为；此时带 `cwd` 限定的 service（`cwd ≠ "*"`）因无锚定基准而跳过，`kpm config` 给出提示。
 - 命中 service 的固定 `name` 直接作为身份（与 `-n` 等价），hash 不参与。
 
 ## 4. 示例
@@ -152,6 +152,6 @@ match  = "npm run dev"
 
 ## 7. 对既有文档的回写（随本文档同步）
 
-- `01-requirements.md` FR2：新增"项目根锚定"条目；FR10：指向本文档、services 改为数组形式、补 `kp config show`；
+- `01-requirements.md` FR2：新增"项目根锚定"条目；FR10：指向本文档、services 改为数组形式、补 `kpm config`；
 - `02-scope.md` §2 FR10 行、§3 M1-DoD、§5 风险表同步两层合并与锚定风险；
 - `03-wbs.md` WP7：任务细化（发现/合并/校验/config show），预估 1.0 → 1.5 人日。

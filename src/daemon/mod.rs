@@ -25,6 +25,8 @@ pub struct Ctx {
     pub reg: Registry,
     pub exe: PathBuf,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// 策略粘性存储：会话名 → 生效策略（D11，policies.json 落盘）
+    policies: Mutex<HashMap<String, Policy>>,
 }
 
 impl Ctx {
@@ -35,6 +37,41 @@ impl Ctx {
             .entry(name.to_string())
             .or_default()
             .clone()
+    }
+
+    /// 策略粘性解析：CLI -p > 已存储 > 配置解析值；生效即存储（FR3/D11）。
+    fn resolve_policy(&self, name: &str, spec: &mut SessionSpec) -> Policy {
+        let stored = self.policies.lock().unwrap().get(name).copied();
+        let eff = spec.policy_cli.or(stored).unwrap_or(spec.policy);
+        spec.policy = eff;
+        spec.policy_cli = None;
+        self.policies.lock().unwrap().insert(name.to_string(), eff);
+        persist_policies(self);
+        eff
+    }
+}
+
+fn load_policies() -> HashMap<String, Policy> {
+    paths::policies_file()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn persist_policies(ctx: &Ctx) {
+    let Ok(p) = paths::policies_file() else {
+        return;
+    };
+    let map = ctx.policies.lock().unwrap().clone();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let tmp = p.with_extension("json.tmp");
+    if let Ok(j) = serde_json::to_string_pretty(&map) {
+        if std::fs::write(&tmp, j).is_ok() {
+            let _ = std::fs::rename(&tmp, &p);
+        }
     }
 }
 
@@ -58,6 +95,7 @@ pub fn serve() -> Result<(), String> {
         reg,
         exe,
         locks: Mutex::new(HashMap::new()),
+        policies: Mutex::new(load_policies()),
     });
     reconcile::run(&ctx);
 
@@ -226,6 +264,9 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         let _ = ctx.eng.kill_session(&spec.name);
         return Err(format!("设置观测项失败: {e}"));
     }
+    // 观测项就位 → 放行 _spawn（两阶段启动）
+    let go = spec.spec_path.with_extension("json.go");
+    let _ = std::fs::write(&go, b"");
     let name = spec.name.clone();
     ctx.reg.insert(
         &name,
@@ -247,10 +288,12 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
 
 // ---------- Spawn 与策略 ----------
 
-fn spawn(ctx: &Ctx, spec: SessionSpec) -> Response {
-    let lock = ctx.session_lock(&spec.name);
+fn spawn(ctx: &Ctx, mut spec: SessionSpec) -> Response {
+    let name = spec.name.clone();
+    let lock = ctx.session_lock(&name);
     let _g = lock.lock().unwrap();
-    if let Some(entry) = ctx.reg.get(&spec.name) {
+    ctx.resolve_policy(&name, &mut spec);
+    if let Some(entry) = ctx.reg.get(&name) {
         let st = entry.st.lock().unwrap().clone();
         if st.status == Status::Running {
             let info = build_info(ctx, &entry, &spec.name);
@@ -320,7 +363,7 @@ fn attach_existing(ctx: &Ctx, name: &str) -> Response {
     let Some(entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
-            message: format!("没有会话 {name}（kp ls 查看）"),
+            message: format!("没有会话 {name}（kpm ls 查看）"),
         };
     };
     let st = entry.st.lock().unwrap().clone();
@@ -328,7 +371,7 @@ fn attach_existing(ctx: &Ctx, name: &str) -> Response {
         return Response::Err {
             code: 1,
             message: format!(
-                "会话 {name} 已退出（退出码 {}，原因 {}）；重启: kp restart {name}",
+                "会话 {name} 已退出（退出码 {}，原因 {}）；重启: kpm restart {name}",
                 st.exit_code.map(|c| c.to_string()).unwrap_or("?".into()),
                 st.reason
             ),
@@ -454,6 +497,12 @@ fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
             .map(|i| i.pane_pid)
             .filter(|p| *p != 0)?,
     };
+    // 预标记原因：_spawn 的自报（finalize，reason=exited）可能与杀灭竞态，
+    // 先写入 restart/stopped 才能让 WaitExit 的跟随逻辑与历史记录不真相被覆盖。
+    {
+        let mut g = entry.st.lock().unwrap();
+        g.reason = reason.to_string();
+    }
     // 组杀失败（组 leader 已变）时退化为单进程杀
     if ctx.eng.kill_group(pgid, libc::SIGTERM).is_err() {
         let _ = unsafe { libc::kill(pgid, libc::SIGTERM) };
@@ -510,7 +559,10 @@ fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
         g.status = Status::Exited;
         g.exit_code = code;
         g.ended_at_ms = Some(now_ms());
-        g.reason = reason.to_string();
+        if g.reason.is_empty() {
+            // 杀灭路径已预标记 restart/stopped，不可覆盖
+            g.reason = reason.to_string();
+        }
     }
     entry.cv.notify_all();
     append_history_once(&entry, None);
@@ -521,11 +573,10 @@ fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
 fn cleanup_dead(ctx: &Ctx, name: &str) {
     ctx.reg.remove(name);
     let _ = ctx.eng.kill_session(name);
-    let _ = std::fs::remove_file(
-        paths::specs_dir()
-            .map(|d| d.join(format!("{name}.json")))
-            .unwrap_or_default(),
-    );
+    if let Ok(d) = paths::specs_dir() {
+        let _ = std::fs::remove_file(d.join(format!("{name}.json")));
+        let _ = std::fs::remove_file(d.join(format!("{name}.json.go")));
+    }
     ctx.reg.persist();
 }
 
@@ -572,31 +623,43 @@ fn list_sessions(ctx: &Ctx) -> Vec<SessionInfo> {
 }
 
 fn wait_exit(ctx: &Ctx, name: &str, timeout_ms: u64) -> Response {
-    let Some(entry) = ctx.reg.get(name) else {
+    let Some(mut entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
             message: format!("没有会话 {name}"),
         };
     };
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut g = entry.st.lock().unwrap();
     loop {
-        if g.status == Status::Exited {
-            let dur = g
+        let snapshot = entry.st.lock().unwrap().clone();
+        if snapshot.status == Status::Exited {
+            if snapshot.reason == "restart" {
+                // 会话因 restart 退出：跟随同名新实例继续等待（客户端 attach 跟随的前提）
+                std::thread::sleep(Duration::from_millis(100));
+                if let Some(e2) = ctx.reg.get(name) {
+                    entry = e2;
+                }
+                continue;
+            }
+            let dur = snapshot
                 .ended_at_ms
                 .unwrap_or_else(now_ms)
-                .saturating_sub(g.started_at_ms);
+                .saturating_sub(snapshot.started_at_ms);
             return Response::Exit(Some(ExitInfo {
-                exit_code: g.exit_code,
+                exit_code: snapshot.exit_code,
                 duration_ms: dur,
+                reason: snapshot.reason.clone(),
             }));
         }
         let now = Instant::now();
         if now >= deadline {
             return Response::Exit(None);
         }
-        let (ng, _) = entry.cv.wait_timeout(g, deadline - now).unwrap();
-        g = ng;
+        let guard = entry.st.lock().unwrap();
+        if guard.status != Status::Running {
+            continue; // 状态已变，回到顶部快照判断
+        }
+        let _ = entry.cv.wait_timeout(guard, deadline - now).unwrap();
     }
 }
 
@@ -606,6 +669,7 @@ fn clean(ctx: &Ctx, history_keep: u32) -> Response {
             let _ = ctx.eng.kill_session(&name);
             ctx.reg.remove(&name);
             let _ = std::fs::remove_file(&st.spec.spec_path);
+            let _ = std::fs::remove_file(st.spec.spec_path.with_extension("json.go"));
         }
     }
     if let Ok(p) = paths::history_file() {

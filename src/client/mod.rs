@@ -65,6 +65,33 @@ fn incubate() -> Result<(), String> {
 }
 
 fn rpc(req: Request) -> Result<Response, RpcError> {
+    // 版本不匹配（二进制刚升级、daemon 还是旧版）→ 自动重启 daemon 后重试一次。
+    // 会话由 tmux 承载不受影响，新 daemon 启动时 reconcile 接管（架构 §4.5）。
+    match rpc_once(req.clone()) {
+        Err((4, _)) => {
+            force_daemon_restart();
+            rpc_once(req)
+        }
+        other => other,
+    }
+}
+
+/// 杀掉旧版 daemon 并重新孵化（同机同二进制路径，版本错配只在升级后出现）。
+fn force_daemon_restart() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new("pkill")
+            .args(["-f", &format!("{} --daemon", exe.display())])
+            .status();
+    }
+    if let Ok(p) = paths::socket_path() {
+        let _ = std::fs::remove_file(p);
+    }
+    thread::sleep(Duration::from_millis(300));
+    let _ = incubate();
+    thread::sleep(Duration::from_millis(300));
+}
+
+fn rpc_once(req: Request) -> Result<Response, RpcError> {
     let mut s = connect_daemon()?;
     send_frame(
         &mut s,
@@ -81,6 +108,8 @@ fn rpc(req: Request) -> Result<Response, RpcError> {
                 format!("协议版本不匹配（client v{PROTO_VERSION} / daemon v{version}），请升级 kp"),
             ))
         }
+        // 旧版 daemon 对新版本 Hello 的拒绝形态是 Err{code:4}
+        Response::Err { code: 4, message } => return Err((4, message)),
         _ => return Err((1, "daemon 握手异常".into())),
     }
     send_frame(&mut s, &req).map_err(|e| (1, e.to_string()))?;
@@ -151,6 +180,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
         cwd: cwd.clone(),
         env,
         policy,
+        policy_cli: policy_opt,
         log_path,
         spec_path,
         branch: identity::git_info(cfg.project_root.as_deref()),
@@ -186,6 +216,7 @@ fn wait_exit_forever(name: &str) -> Result<(), String> {
             name: name.to_string(),
             timeout_ms: 3_600_000,
         }) {
+            Ok(Response::Exit(Some(ei))) if ei.reason == "restart" => continue, // 重启中，继续等新实例
             Ok(Response::Exit(Some(_))) => return Ok(()),
             Ok(Response::Exit(None)) => continue, // 长轮询续期
             Ok(Response::Err { message, .. }) => return Err(message),
@@ -202,8 +233,8 @@ fn handle_outcome(outcome: &SpawnOutcome) -> i32 {
                 "✗ kp: 会话 {} 已在运行，当前命令被策略 reject 拒绝",
                 info.name
             );
-            eprintln!("  接入: kp attach {}", info.name);
-            eprintln!("  查看: kp ls");
+            eprintln!("  接入: kpm attach {}", info.name);
+            eprintln!("  查看: kpm ls");
             3
         }
         SpawnOutcome::Started {
@@ -254,93 +285,160 @@ fn banner(mode: &str, info: &crate::protocol::SessionInfo) {
             fmt_duration(now_ms().saturating_sub(t0))
         );
     }
+    if let Some(p) = info.policy {
+        eprintln!(" 策略   {:?}（重复时生效；-p 可临时覆盖并改设粘性策略）", p);
+    }
     eprintln!(" 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离");
     eprintln!("───────────────────────────────────────────────");
 }
 
-/// attach 管控结构（架构 A3）：fork tmux attach 承担终端 I/O，
-/// 自己阻塞 WaitExit 长轮询，两边谁先返回都能收场。
+/// attach 管控结构（架构 A3）：fork tmux attach 承担终端 I/O，自身阻塞 WaitExit 长轮询。
+/// restart 场景（本窗口或其他窗口发起）：旧实例退出后按"实例纪元"（started_at_ms）
+/// 自动跟随接入同名新实例（FR3），而不是被甩出。
 fn attach_session(name: &str, attach_args: &[String]) -> i32 {
     unsafe {
         libc::signal(libc::SIGINT, libc::SIG_IGN);
         libc::signal(libc::SIGQUIT, libc::SIG_IGN);
     }
-    let (tx, rx) = mpsc::channel::<Result<ExitInfo, String>>();
-    {
-        let name = name.to_string();
-        thread::spawn(move || loop {
-            match rpc(Request::WaitExit {
-                name: name.clone(),
-                timeout_ms: 3_600_000,
-            }) {
-                Ok(Response::Exit(Some(ei))) => {
-                    let _ = tx.send(Ok(ei));
-                    return;
-                }
-                Ok(Response::Exit(None)) => continue,
-                Ok(Response::Err { message, .. }) => {
-                    let _ = tx.send(Err(message));
-                    return;
-                }
-                Ok(_) => {
-                    let _ = tx.send(Err("daemon 响应异常".into()));
-                    return;
-                }
-                Err((_, m)) => {
-                    let _ = tx.send(Err(m));
-                    return;
-                }
-            }
-        });
+    let mut base_started: Option<u64> = None;
+    if let Ok(Response::Detail(Some(i))) = rpc(Request::Status {
+        name: name.to_string(),
+    }) {
+        base_started = i.started_at_ms;
     }
-    let mut cmd = Command::new(&attach_args[0]);
-    cmd.args(&attach_args[1..])
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE");
-    let status = match cmd.status() {
-        Ok(s) => s,
-        Err(e) => {
-            return die(
-                1,
-                &format!("无法启动 tmux attach（需要 tmux ≥ 3.0，macOS: brew install tmux）: {e}"),
-            )
-        }
-    };
-    match rx.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(ei)) => {
-            eprintln!(
-                "\nkp: 会话退出 · 退出码 {} · 用时 {}",
-                ei.exit_code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "?".into()),
-                fmt_duration(ei.duration_ms)
-            );
-            ei.exit_code.unwrap_or(0)
-        }
-        _ => match rpc(Request::Status {
-            name: name.to_string(),
-        }) {
-            Ok(Response::Detail(Some(i))) if i.status == "running" => {
-                if status.success() {
-                    eprintln!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kp attach {name}）");
-                } else {
-                    eprintln!("\nkp: attach 已退出且失败；会话仍在运行（重试: kp attach {name}）");
+    loop {
+        let (tx, rx) = mpsc::channel::<Result<ExitInfo, String>>();
+        {
+            let name = name.to_string();
+            thread::spawn(move || loop {
+                match rpc(Request::WaitExit {
+                    name: name.clone(),
+                    timeout_ms: 3_600_000,
+                }) {
+                    Ok(Response::Exit(Some(ei))) => {
+                        let _ = tx.send(Ok(ei));
+                        return;
+                    }
+                    Ok(Response::Exit(None)) => continue,
+                    Ok(Response::Err { message, .. }) => {
+                        let _ = tx.send(Err(message));
+                        return;
+                    }
+                    Ok(_) => {
+                        let _ = tx.send(Err("daemon 响应异常".into()));
+                        return;
+                    }
+                    Err((_, m)) => {
+                        let _ = tx.send(Err(m));
+                        return;
+                    }
                 }
+            });
+        }
+        let mut cmd = Command::new(&attach_args[0]);
+        cmd.args(&attach_args[1..])
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+        let attach_status = match cmd.status() {
+            Ok(s) => s,
+            Err(e) => {
+                return die(
+                    1,
+                    &format!(
+                        "无法启动 tmux attach（需要 tmux ≥ 3.0，macOS: brew install tmux）: {e}"
+                    ),
+                )
+            }
+        };
+        // 快速路径：WaitExit 已回（含退出原因）
+        if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(3)) {
+            if ei.reason == "restart" && wait_follow(name, &mut base_started) {
+                eprintln!("kp: 服务已重启，已重新接入新实例");
+                continue;
+            }
+            return print_exit_summary(&ei);
+        }
+        // attach 先于 WaitExit 返回：可能是用户 detach，也可能是 restart 进行中。
+        // 以实例纪元判定：running 且 started_at_ms 变了 → 跟随；相同 → 用户 detach。
+        let mut followed = false;
+        let mut session_ended = false;
+        for _ in 0..60 {
+            thread::sleep(Duration::from_millis(250));
+            match rpc(Request::Status {
+                name: name.to_string(),
+            }) {
+                Ok(Response::Detail(Some(i))) if i.status == "running" => {
+                    if base_started != i.started_at_ms {
+                        followed = true;
+                        base_started = i.started_at_ms;
+                        break;
+                    }
+                    eprintln!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）");
+                    return 0;
+                }
+                Ok(Response::Detail(Some(i))) if i.status == "exited" && i.reason != "restart" => {
+                    session_ended = true;
+                    break;
+                    // restart 进行中则继续等新实例
+                }
+                _ => {} // 会话重建中
+            }
+        }
+        if followed {
+            eprintln!("kp: 服务已重启，已重新接入新实例");
+            continue;
+        }
+        if session_ended {
+            if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(5)) {
+                return print_exit_summary(&ei);
+            }
+            eprintln!("\nkp: 会话已结束（详见 kpm history）");
+            return if attach_status.success() {
                 0
-            }
-            _ => {
-                eprintln!("\nkp: 会话已结束（daemon 未能回报退出码，详见 kp history）");
-                if status.success() {
-                    0
-                } else {
-                    status.code().unwrap_or(1)
-                }
-            }
-        },
+            } else {
+                attach_status.code().unwrap_or(1)
+            };
+        }
+        eprintln!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）");
+        return 0;
     }
 }
 
-// ---------- 管理子命令 ----------
+/// restart 跟随：轮询等待新实例出现（至多 ~15s）。出现即更新纪元并返回 true。
+fn wait_follow(name: &str, base: &mut Option<u64>) -> bool {
+    for _ in 0..60 {
+        thread::sleep(Duration::from_millis(250));
+        match rpc(Request::Status {
+            name: name.to_string(),
+        }) {
+            Ok(Response::Detail(Some(i))) if i.status == "running" => {
+                if *base != i.started_at_ms {
+                    *base = i.started_at_ms;
+                    return true;
+                }
+                return false;
+            }
+            Ok(Response::Detail(Some(i))) if i.status == "exited" && i.reason != "restart" => {
+                return false
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn print_exit_summary(ei: &ExitInfo) -> i32 {
+    eprintln!(
+        "\nkp: 会话退出 · 退出码 {} · 用时 {}",
+        ei.exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "?".into()),
+        fmt_duration(ei.duration_ms)
+    );
+    ei.exit_code.unwrap_or(0)
+}
+
+// ---------- 管理子命令（kpm 入口） ----------
 
 pub fn cmd_ls() -> i32 {
     match rpc(Request::List) {
@@ -355,10 +453,11 @@ pub fn cmd_ls() -> i32 {
                 .max()
                 .unwrap_or(4)
                 .clamp(4, 60);
-            let (h_name, h_status, h_pid, h_age, h_cli, h_branch, h_cmd) =
-                ("NAME", "STATUS", "PID", "AGE", "CLI", "BRANCH", "CMD");
+            let (h_name, h_status, h_policy, h_pid, h_age, h_cli, h_branch, h_cmd) = (
+                "NAME", "STATUS", "POLICY", "PID", "AGE", "CLI", "BRANCH", "CMD",
+            );
             println!(
-                "{h_name:<w$} {h_status:<8} {h_pid:<7} {h_age:>8} {h_cli:>4}  {h_branch:<12} {h_cmd}"
+                "{h_name:<w$} {h_status:<8} {h_policy:<8} {h_pid:<7} {h_age:>8} {h_cli:>4}  {h_branch:<12} {h_cmd}"
             );
             for i in &list {
                 let age = i
@@ -379,10 +478,15 @@ pub fn cmd_ls() -> i32 {
                 } else {
                     i.status.clone()
                 };
+                let policy = i
+                    .policy
+                    .map(|p| format!("{p:?}").to_lowercase())
+                    .unwrap_or_else(|| "-".into());
                 println!(
-                    "{:<w$} {:<8} {:<7} {:>8} {:>4}  {:<12} {}",
+                    "{:<w$} {:<8} {:<8} {:<7} {:>8} {:>4}  {:<12} {}",
                     i.name,
                     status,
+                    policy,
                     pid,
                     age,
                     i.clients,
@@ -411,7 +515,9 @@ pub fn cmd_status(name: &str) -> i32 {
                 println!("项目根   {}", i.project_root);
             }
             println!("分支     {}", i.branch);
-            println!("策略     {:?}", i.policy);
+            if let Some(p) = i.policy {
+                println!("策略     {p:?}（粘性；-p 可改设）");
+            }
             if let Some(pid) = i.pane_pid {
                 println!("PID      {pid}（客户端 {} 个）", i.clients);
             }
@@ -478,7 +584,7 @@ pub fn cmd_stop(name: Option<String>, all: bool) -> i32 {
         Request::StopAll
     } else {
         let Some(n) = name else {
-            return die(1, "用法: kp stop <name> 或 kp stop --all");
+            return die(1, "用法: kpm stop <name> 或 kpm stop --all");
         };
         Request::Stop { name: n }
     };
@@ -679,7 +785,7 @@ pub fn cmd_config() -> i32 {
     0
 }
 
-/// `kp _report`：pane-died hook 回传退出码；daemon 不可达时兜底直写历史。
+/// `kp _report`：pane-died hook / _spawn 回传退出码；daemon 不可达时兜底直写历史。
 pub fn cmd_report(name: &str, code: &str) -> i32 {
     let code = if code.is_empty() {
         None

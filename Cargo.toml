@@ -9,6 +9,10 @@ readme = "README.md"
 keywords = ["cli", "tmux", "terminal", "process", "devtools"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "kp_cli"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -19,4 +23,8 @@ libc = "0.2"
 
 [[bin]]
 name = "kp"
-path = "src/main.rs"
+path = "src/bin/kp.rs"
+
+[[bin]]
+name = "kpm"
+path = "src/bin/kpm.rs"
