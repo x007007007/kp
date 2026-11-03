@@ -30,7 +30,7 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             d="stage-$t"; mkdir -p "$d"
-            cp target/release/$t/kp target/release/$t/kpm README.md LICENSE "$d/"
+            cp "target/$t/release/kp" "target/$t/release/kpm" README.md LICENSE "$d/"
             tar czf "kp-cli-$VER-$t.tar.gz" -C "$d" .
           done
       - name: Universal DMG
@@ -39,10 +39,10 @@ jobs:
           d="stage-dmg/kp-installer"; mkdir -p "$d"
           lipo -create \
             -output "$d/kp" \
-            target/release/aarch64-apple-darwin/kp target/release/x86_64-apple-darwin/kp
+            target/aarch64-apple-darwin/release/kp target/x86_64-apple-darwin/release/kp
           lipo -create \
             -output "$d/kpm" \
-            target/release/aarch64-apple-darwin/kpm target/release/x86_64-apple-darwin/kpm
+            target/aarch64-apple-darwin/release/kpm target/x86_64-apple-darwin/release/kpm
           cp README.md LICENSE "$d/"
           cat > "$d/install.sh" <<'EOS'
           #!/bin/sh
