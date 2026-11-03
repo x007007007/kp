@@ -44,7 +44,14 @@ $ brew tap x007007007/kp && brew install kp    # 自动带上 tmux 依赖
 - macOS：`kp-installer-vX.dmg`（双击打开，运行 `install.sh`）或 `kp-cli-vX-<target>.tar.gz`；
 - Linux：`kp-cli-vX-<target>.tar.gz`，解压后把 `kp`、`kpm` 放进 PATH。
 
-无论哪种方式，kp 都需要 [tmux](https://github.com/tmux/tmux) ≥ 3.0（macOS: `brew install tmux`）。kp 使用独立 tmux socket（`-L kp`），与你自己的 tmux 会话完全隔离。
+**引擎**：kp 自 v0.2 起默认使用**自研 PTY 引擎**（每会话一个轻量 holder 进程，**零外部依赖**）。如需与全屏 TUI 程序多窗口共编辑等高级终端复用能力，可在配置中切回 tmux 引擎：
+
+```toml
+[run]
+engine = "tmux"   # 默认 native；tmux 需 ≥ 3.0（brew install tmux）
+```
+
+tmux 引擎使用独立 socket（`-L kp`），与你自己的 tmux 会话完全隔离。screen 不作为引擎支持（无子进程退出码、无只读 attach——native 引擎已覆盖其能力）。
 
 > macOS 未公证提示：直接下载的二进制首次运行可能被 Gatekeeper 拦截，执行 `xattr -d com.apple.quarantine kp kpm`（或改用 brew 安装）即可。
 

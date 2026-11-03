@@ -1,10 +1,10 @@
 //! kp — 包装任意命令。没有子命令：kp 之后的一切都是被包装的命令及其参数，
 //! 因此 `kp ls`、`kp help`、`kp restart` 都能包装同名系统命令（D10）。
-//! 会话管理命令在 `kpm`；`_spawn` / `_report` 为内部命令（tmux pane 与 hook 调用）。
+//! 会话管理命令在 `kpm`；`_spawn`/`_holder`/`_attach`/`_report` 为内部命令。
 
 use clap::Parser;
 use kp_cli::protocol::Policy;
-use kp_cli::{client, daemon, spawn_cmd};
+use kp_cli::{attach_cmd, client, daemon, holder, spawn_cmd};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -34,6 +34,9 @@ struct Cli {
 }
 
 fn main() {
+    // 管道下游关闭（如 kpm status | grep -q）时静默退出，而非 println panic
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
     let cli = Cli::parse();
     if cli.daemon {
         let code = match daemon::serve() {
@@ -58,6 +61,24 @@ fn main() {
                 2
             }
         },
+        Some((a, rest)) if a == "_holder" => match parse_flag(rest, "--spec") {
+            Some(p) => holder::run(&PathBuf::from(p)),
+            None => {
+                eprintln!("kp _holder: 缺少 --spec");
+                2
+            }
+        },
+        Some((a, rest)) if a == "_attach" => {
+            let sock = parse_flag(rest, "--socket").map(PathBuf::from);
+            let readonly = rest.iter().any(|a| a == "--readonly");
+            match sock {
+                Some(s) => attach_cmd::run(&s, readonly),
+                None => {
+                    eprintln!("kp _attach: 缺少 --socket");
+                    2
+                }
+            }
+        }
         Some((a, rest)) if a == "_report" => match (rest.first(), rest.get(1)) {
             (Some(n), Some(c)) => client::cmd_report(n, c),
             _ => {

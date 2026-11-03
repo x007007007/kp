@@ -24,9 +24,31 @@ fn die(code: i32, msg: &str) -> i32 {
     code
 }
 
+/// 内部命令清单（与 kp.rs 的 INTERNAL_CMDS 对应）；被包装会递归拉会话 → fork bomb。
+fn kp_cli_internal(a: &str) -> bool {
+    matches!(a, "_spawn" | "_report" | "_holder" | "_attach")
+}
+
+/// daemon 孵化前的引擎选择（[run].engine；daemon 启动时读取 KP_ENGINE）。
+fn apply_engine_env() {
+    if std::env::var_os("KP_ENGINE").is_some() {
+        return;
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(cfg) = config::load(&cwd, None) {
+            let label = match cfg.run.engine {
+                crate::engine::EngineKind::Native => "native",
+                crate::engine::EngineKind::Tmux => "tmux",
+            };
+            std::env::set_var("KP_ENGINE", label);
+        }
+    }
+}
+
 // ---------- RPC ----------
 
 fn connect_daemon() -> Result<UnixStream, RpcError> {
+    apply_engine_env();
     let sock = paths::socket_path().map_err(|e| (1, e.to_string()))?;
     for attempt in 0..30u32 {
         if let Ok(s) = UnixStream::connect(&sock) {
@@ -41,8 +63,18 @@ fn connect_daemon() -> Result<UnixStream, RpcError> {
 }
 
 /// 首次调用孵化 daemon（ssh-agent 模式，FR7）：detached + 输出重定向到 daemon.log。
+/// 注意：kpm 触发孵化时 current_exe 是 kpm，daemon 只能从 kp 二进制孵化。
 fn incubate() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if exe.file_name().map(|n| n == "kpm").unwrap_or(false) {
+        exe.set_file_name("kp");
+    }
+    if !exe.is_file() {
+        return Err(format!(
+            "找不到 kp 二进制（{}）：kpm 与 kp 需安装在同一目录",
+            exe.display()
+        ));
+    }
     let log = paths::daemon_log().map_err(|e| e.to_string())?;
     if let Some(p) = log.parent() {
         let _ = paths::ensure_dir(p);
@@ -124,7 +156,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
     }
     // 防线：内部子命令绝不允许被当作被包装命令（否则会话 pane 递归拉起会话 → fork bomb）
     let is_kp_self = argv[0] == "kp" || argv[0].ends_with("/kp");
-    if argv.len() >= 2 && is_kp_self && matches!(argv[1].as_str(), "_spawn" | "_report") {
+    if argv.len() >= 2 && is_kp_self && kp_cli_internal(argv[1].as_str()) {
         return die(1, &format!("内部命令 {:?} 不可被包装", argv[1]));
     }
     let cwd = match std::env::current_dir() {
@@ -181,6 +213,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
         env,
         policy,
         policy_cli: policy_opt,
+        engine: cfg.run.engine,
         log_path,
         spec_path,
         branch: identity::git_info(cfg.project_root.as_deref()),
@@ -482,11 +515,13 @@ pub fn cmd_ls() -> i32 {
                     .policy
                     .map(|p| format!("{p:?}").to_lowercase())
                     .unwrap_or_else(|| "-".into());
+                let eng = format!("{:?}", i.engine).to_lowercase();
                 println!(
-                    "{:<w$} {:<8} {:<8} {:<7} {:>8} {:>4}  {:<12} {}",
+                    "{:<w$} {:<8} {:<8} {:<7} {:<7} {:>8} {:>4}  {:<12} {}",
                     i.name,
                     status,
                     policy,
+                    eng,
                     pid,
                     age,
                     i.clients,

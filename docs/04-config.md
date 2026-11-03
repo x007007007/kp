@@ -45,6 +45,8 @@ ignore_env = []             # glob[]，追加到内置默认忽略表。例：["
 [run]
 default_policy = "attach"   # attach | wait | restart | new | reject
                             # 未命中 service 且无 -p 时采用
+engine        = "native"    # native（自研 PTY holder，默认，零依赖）| tmux（需 tmux ≥ 3.0）
+                            # daemon 启动时由首个孵化它的客户端配置决定；切换引擎需重启 daemon
 term_timeout   = 10         # 秒，1..=600；杀组时 TERM→KILL 的等待
 log_max_mb     = 50         # 1..=2048；单会话日志上限
 log_keep       = 1          # 轮转保留档数（M2 生效）

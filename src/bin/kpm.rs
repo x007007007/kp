@@ -59,6 +59,9 @@ enum Cmd {
 }
 
 fn main() {
+    // 管道下游关闭（如 kpm status | grep -q）时静默退出，而非 println panic
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
     let cli = Cli::parse();
     use kp_cli::client;
     let code = match cli.cmd {

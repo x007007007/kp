@@ -411,7 +411,32 @@ tmux < 3.2 时 `pane_dead_status` 不可用 → 退化路径：`_report` 由 hoo
 
 管理命令（ls/stop）不经 tmux 引擎路径时 < 10ms。预算超标的第一嫌疑人是 `list-clients`/`display-message` 的进程 fork 开销——必要时合并为单次 `list-sessions -F` 批量取回。
 
-## 12. 架构级决策记录
+## 12. native 引擎（v0.2，D12）
+
+每会话一个 **holder 进程**（`kp _holder --spec <path>`，dtach 式，核心 ~500 行）：
+
+```text
+holder: setsid → openpty → fork（子进程 setsid+TIOCSCTTY+exec 命令）
+        → 监听 runtime/sessions/<name>.sock → poll 主循环
+          ├─ PTY master 可读 → 广播给所有 attach 客户端 + tee 落盘（自带 log_max_mb）
+          ├─ writer 客户端 F_INPUT → 写 master；F_RESIZE → ioctl + SIGWINCH
+          ├─ 新连接 Attach{readonly} → 多读单写在 holder 侧强制（写锁断连即释放）
+          └─ SIGCHLD → waitpid 真实退出码（信号死亡 130 可达）
+             → 写状态文件 + RPC 上报 daemon + 广播 Exited + grace 2s 后退出
+```
+
+客户端 attach = `kp _attach --socket <path> [--readonly]`：raw 模式中继（stdin→F_INPUT、
+Data→stdout、SIGWINCH→Resize、Exited→以子进程退出码退出）。
+
+相对 tmux 引擎的简化：`_spawn` 两阶段启动、`pane_dead_status`≥3.2、pane-died hook、
+`@kp_*` 元数据、remain-on-exit **全部消失**——holder 从头掌控 PTY 生命周期。
+会话的权威实况 = holder 状态文件（runtime/sessions/<name>.json），
+daemon reconcile 以其 + tmux `list-sessions` 双源对账（按会话分派引擎）。
+
+已知局限：全屏 TUI 程序（vim/htop）在多客户端接入时无差异重绘，可能花屏
+（重度 TUI 用户切回 `engine = "tmux"`）；子进程 setsid 脱离组则不受整组杀灭（两类引擎同）。
+
+## 13. 架构级决策记录
 
 | # | 决策 | 理由 |
 |---|---|---|
@@ -423,3 +448,6 @@ tmux < 3.2 时 `pane_dead_status` 不可用 → 退化路径：`_report` 由 hoo
 | A6 | reconcile 以 tmux 实况为准 | 注册表只是缓存——崩溃恢复方向单一，无"谁是真相"之争 |
 | A7 | per-session 锁而非全局锁 | stop/restart 慢操作不阻塞其他会话的 spawn |
 | A8 | `kp _report` 复用主 RPC 通道 | 一个协议一套握手，不为 hook 单开旁路 |
+| A9 | native 引擎每会话一个 holder 进程（非 daemon 直管 PTY） | holder 独立于 daemon 存活（D6）；崩溃域隔离到单会话；协议极简 |
+| A10 | 多读单写在 holder 侧强制 + 写锁断连即释放 | tmux 引擎"先到先得不转移"的升级；以 accept 顺序为权威 |
+| A11 | 引擎按会话记录并分派（spec.engine），daemon 双引擎并存 | 老会话平滑共存；reconcile 双源对账 |

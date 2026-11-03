@@ -1,4 +1,4 @@
-use super::{Engine, TmuxSessionInfo};
+use super::{Engine, EngineSessionInfo};
 use crate::protocol::SessionSpec;
 use crate::util::{now_ms, sh_quote};
 use std::path::Path;
@@ -35,12 +35,12 @@ fn no_server(err: &str) -> bool {
     err.contains("no server running") || err.contains("error connecting")
 }
 
-fn parse_info(name: &str, line: &str) -> Option<TmuxSessionInfo> {
+fn parse_info(name: &str, line: &str) -> Option<EngineSessionInfo> {
     let parts: Vec<&str> = line.splitn(5, '|').collect();
     if parts.len() < 5 {
         return None;
     }
-    Some(TmuxSessionInfo {
+    Some(EngineSessionInfo {
         name: name.to_string(),
         pane_pid: parts[0].trim().parse().unwrap_or(0),
         pane_dead: parts[1].trim() == "1",
@@ -107,7 +107,7 @@ impl Engine for TmuxEngine {
         Ok(())
     }
 
-    fn info(&self, name: &str) -> Result<Option<TmuxSessionInfo>, String> {
+    fn info(&self, name: &str) -> Result<Option<EngineSessionInfo>, String> {
         match call(&["display-message", "-p", "-t", &format!("{name}:0"), FMT]) {
             Ok(s) => Ok(parse_info(name, s.trim())),
             Err(e) if session_missing(&e) => Ok(None),
@@ -115,7 +115,7 @@ impl Engine for TmuxEngine {
         }
     }
 
-    fn list(&self) -> Result<Vec<TmuxSessionInfo>, String> {
+    fn list(&self) -> Result<Vec<EngineSessionInfo>, String> {
         match call(&["list-sessions", "-F", LIST_FMT]) {
             Ok(s) => Ok(s
                 .lines()

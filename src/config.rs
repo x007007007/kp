@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::engine::EngineKind;
 use crate::glob::glob_match;
 use crate::paths;
 use crate::protocol::Policy;
@@ -31,6 +32,7 @@ struct RunCfg {
     log_keep: Option<u32>,
     history_keep: Option<u32>,
     notify: Option<bool>,
+    engine: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -48,6 +50,8 @@ pub struct ServiceCfg {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Run {
     pub default_policy: Policy,
+    /// 新会话使用的引擎（D12）：native | tmux
+    pub engine: EngineKind,
     pub term_timeout: u64,
     pub log_max_mb: u64,
     pub log_keep: u32,
@@ -59,6 +63,7 @@ impl Default for Run {
     fn default() -> Self {
         Run {
             default_policy: Policy::Attach,
+            engine: EngineKind::Native,
             term_timeout: 10,
             log_max_mb: 50,
             log_keep: 1,
@@ -124,6 +129,7 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
 
     // 标量：高层覆盖低层
     let mut run = Run::default();
+    let mut cfg_engine: Option<String> = None;
     for c in [&gcfg, &pcfg].into_iter().flatten() {
         if let Some(r) = &c.run {
             if let Some(v) = r.default_policy {
@@ -144,6 +150,10 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
             if let Some(v) = r.notify {
                 run.notify = v;
             }
+            if let Some(v) = &r.engine {
+                cfg_engine = Some(v.clone());
+                run.engine = EngineKind::parse(v).unwrap_or(run.engine);
+            }
         }
     }
 
@@ -157,6 +167,11 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
         services.extend(c.services.clone().unwrap_or_default());
     }
 
+    if let Some(e) = &cfg_engine {
+        if EngineKind::parse(e).is_none() {
+            return Err(format!("run.engine 非法: {e:?}（native | tmux）"));
+        }
+    }
     validate(&services, &run)?;
 
     Ok(Effective {
@@ -176,6 +191,7 @@ fn parse_file(p: &Path) -> Result<FileCfg, String> {
 }
 
 fn validate(services: &[ServiceCfg], run: &Run) -> Result<(), String> {
+    let _ = run;
     if !(1..=600).contains(&run.term_timeout) {
         return Err(format!(
             "run.term_timeout 越界: {}（1..=600）",

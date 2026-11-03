@@ -1,6 +1,6 @@
 mod reconcile;
 
-use crate::engine::Engine;
+use crate::engine::{Engine, EngineKind};
 use crate::history::{self, HistoryEntry};
 use crate::paths;
 use crate::protocol::{
@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 const EXIT_GRACE_MS: u64 = 2000;
 
 pub struct Ctx {
-    pub eng: Box<dyn Engine>,
+    pub native: Box<dyn Engine>,
+    pub tmux: Box<dyn Engine>,
     pub reg: Registry,
     pub exe: PathBuf,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -30,6 +31,14 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// 按会话引擎分派（D12：一个 daemon 同时管两种引擎的会话）。
+    pub fn eng(&self, kind: EngineKind) -> &dyn Engine {
+        match kind {
+            EngineKind::Native => self.native.as_ref(),
+            EngineKind::Tmux => self.tmux.as_ref(),
+        }
+    }
+
     fn session_lock(&self, name: &str) -> Arc<Mutex<()>> {
         self.locks
             .lock()
@@ -91,7 +100,8 @@ pub fn serve() -> Result<(), String> {
     let reg = Registry::load(paths::sessions_file().map_err(|e| e.to_string())?);
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let ctx = Arc::new(Ctx {
-        eng: crate::engine::engine(),
+        native: crate::engine::engine(EngineKind::Native),
+        tmux: crate::engine::engine(EngineKind::Tmux),
         reg,
         exe,
         locks: Mutex::new(HashMap::new()),
@@ -211,6 +221,7 @@ fn build_info(ctx: &Ctx, entry: &Arc<Entry>, name: &str) -> SessionInfo {
         clients: 0,
         log_path: st.spec.log_path.to_string_lossy().to_string(),
         identity_hash: st.spec.identity_hash.clone(),
+        engine: st.spec.engine,
         project_root: st
             .spec
             .project_root
@@ -219,7 +230,7 @@ fn build_info(ctx: &Ctx, entry: &Arc<Entry>, name: &str) -> SessionInfo {
             .unwrap_or_default(),
     };
     if st.status == Status::Running {
-        if let Ok(Some(i)) = ctx.eng.info(name) {
+        if let Ok(Some(i)) = ctx.eng(st.spec.engine).info(name) {
             info.pane_pid = Some(i.pane_pid);
             info.clients = i.attached;
         }
@@ -244,9 +255,11 @@ fn write_spec_file(spec: &SessionSpec) -> Result<(), String> {
 
 /// 新建会话：写 spec → tmux create → 观测项 → 注册表（架构 §4.1）。
 fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
-    // 同名 tmux 残留（注册表里没有的异常会话）先清掉
-    if let Ok(Some(_)) = ctx.eng.info(&spec.name) {
-        ctx.eng.kill_session(&spec.name)?;
+    // 同名残留（注册表里没有的异常会话，任何引擎）先清掉
+    for kind in [EngineKind::Native, EngineKind::Tmux] {
+        if let Ok(Some(_)) = ctx.eng(kind).info(&spec.name) {
+            ctx.eng(kind).kill_session(&spec.name)?;
+        }
     }
     write_spec_file(&spec)?;
     if let Some(p) = spec.log_path.parent() {
@@ -258,10 +271,11 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         .open(&spec.log_path)
         .map_err(|e| format!("创建日志文件失败: {e}"))?;
 
-    ctx.eng.create(&spec, &ctx.exe)?;
-    let pgid = ctx.eng.info(&spec.name).ok().flatten().map(|i| i.pane_pid);
-    if let Err(e) = ctx.eng.start_obs(&spec, &ctx.exe) {
-        let _ = ctx.eng.kill_session(&spec.name);
+    let eng = ctx.eng(spec.engine);
+    eng.create(&spec, &ctx.exe)?;
+    let pgid = eng.info(&spec.name).ok().flatten().map(|i| i.pane_pid);
+    if let Err(e) = eng.start_obs(&spec, &ctx.exe) {
+        let _ = eng.kill_session(&spec.name);
         return Err(format!("设置观测项失败: {e}"));
     }
     // 观测项就位 → 放行 _spawn（两阶段启动）
@@ -302,7 +316,7 @@ fn spawn(ctx: &Ctx, mut spec: SessionSpec) -> Response {
                     let writable = info.clients == 0; // 多读单写：先到先得（架构 §4.2）
                     Response::Spawn(SpawnOutcome::Attached {
                         writable,
-                        attach_args: ctx.eng.attach_args(&spec.name, !writable),
+                        attach_args: ctx.eng(spec.engine).attach_args(&spec.name, !writable),
                         info,
                     })
                 }
@@ -315,10 +329,11 @@ fn spawn(ctx: &Ctx, mut spec: SessionSpec) -> Response {
         // 已退出 → 清理后重建
         cleanup_dead(ctx, &spec.name);
     }
+    let engine = spec.engine;
     match create_session(ctx, spec) {
         Ok(info) => Response::Spawn(SpawnOutcome::Started {
             writable: true,
-            attach_args: ctx.eng.attach_args(&info.name, false),
+            attach_args: ctx.eng(engine).attach_args(&info.name, false),
             info,
         }),
         Err(e) => Response::Err {
@@ -341,10 +356,11 @@ fn spawn_new_instance(ctx: &Ctx, mut spec: SessionSpec) -> Response {
             continue;
         }
         spec.name = cand;
+        let engine = spec.engine;
         return match create_session(ctx, spec) {
             Ok(info) => Response::Spawn(SpawnOutcome::Started {
                 writable: true,
-                attach_args: ctx.eng.attach_args(&info.name, false),
+                attach_args: ctx.eng(engine).attach_args(&info.name, false),
                 info,
             }),
             Err(e) => Response::Err {
@@ -381,7 +397,7 @@ fn attach_existing(ctx: &Ctx, name: &str) -> Response {
     let writable = info.clients == 0;
     Response::Attach(SpawnOutcome::Attached {
         writable,
-        attach_args: ctx.eng.attach_args(name, !writable),
+        attach_args: ctx.eng(st.spec.engine).attach_args(name, !writable),
         info,
     })
 }
@@ -408,10 +424,11 @@ fn restart_by_name(
         do_restart(ctx, spec)
     } else {
         cleanup_dead(ctx, name);
+        let engine = spec.engine;
         match create_session(ctx, spec) {
             Ok(info) => Response::Spawn(SpawnOutcome::Started {
                 writable: true,
-                attach_args: ctx.eng.attach_args(&info.name, false),
+                attach_args: ctx.eng(engine).attach_args(&info.name, false),
                 info,
             }),
             Err(e) => Response::Err {
@@ -431,10 +448,11 @@ fn do_restart(ctx: &Ctx, spec: SessionSpec) -> Response {
         append_history_once(&entry, None);
     }
     cleanup_dead(ctx, &name);
+    let engine = spec.engine;
     match create_session(ctx, spec) {
         Ok(info) => Response::Spawn(SpawnOutcome::Restarted {
             writable: true,
-            attach_args: ctx.eng.attach_args(&name, false),
+            attach_args: ctx.eng(engine).attach_args(&name, false),
             old_exit,
             info,
         }),
@@ -490,7 +508,7 @@ fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
     let pgid = match st.pgid {
         Some(p) => p,
         None => ctx
-            .eng
+            .eng(st.spec.engine)
             .info(name)
             .ok()
             .flatten()
@@ -504,16 +522,17 @@ fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
         g.reason = reason.to_string();
     }
     // 组杀失败（组 leader 已变）时退化为单进程杀
-    if ctx.eng.kill_group(pgid, libc::SIGTERM).is_err() {
+    let eng = ctx.eng(st.spec.engine);
+    if eng.kill_group(pgid, libc::SIGTERM).is_err() {
         let _ = unsafe { libc::kill(pgid, libc::SIGTERM) };
     }
     if !wait_dead(ctx, name, st.spec.term_timeout) {
-        let _ = ctx.eng.kill_group(pgid, libc::SIGKILL);
+        let _ = eng.kill_group(pgid, libc::SIGKILL);
         let _ = unsafe { libc::kill(pgid, libc::SIGKILL) };
         wait_dead(ctx, name, 3);
     }
     let code = ctx
-        .eng
+        .eng(st.spec.engine)
         .info(name)
         .ok()
         .flatten()
@@ -533,8 +552,10 @@ fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
 
 fn wait_dead(ctx: &Ctx, name: &str, timeout_s: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(timeout_s);
+    let kind = ctx.reg.get(name).map(|e| e.st.lock().unwrap().spec.engine);
+    let Some(kind) = kind else { return true };
     loop {
-        match ctx.eng.info(name) {
+        match ctx.eng(kind).info(name) {
             Ok(None) => return true,
             Ok(Some(i)) if i.pane_dead => return true,
             _ => {}
@@ -569,10 +590,20 @@ fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
     ctx.reg.persist();
 }
 
-/// 移除注册条目 + 清 tmux 残留会话 + 删 spec。
+/// 移除注册条目 + 清引擎侧残留 + 删 spec。
 fn cleanup_dead(ctx: &Ctx, name: &str) {
+    let kind = ctx.reg.get(name).map(|e| e.st.lock().unwrap().spec.engine);
     ctx.reg.remove(name);
-    let _ = ctx.eng.kill_session(name);
+    match kind {
+        Some(k) => {
+            let _ = ctx.eng(k).kill_session(name);
+        }
+        None => {
+            // 条目不存在（极端残留）：两个引擎都清一遍
+            let _ = ctx.eng(EngineKind::Native).kill_session(name);
+            let _ = ctx.eng(EngineKind::Tmux).kill_session(name);
+        }
+    }
     if let Ok(d) = paths::specs_dir() {
         let _ = std::fs::remove_file(d.join(format!("{name}.json")));
         let _ = std::fs::remove_file(d.join(format!("{name}.json.go")));
@@ -666,7 +697,7 @@ fn wait_exit(ctx: &Ctx, name: &str, timeout_ms: u64) -> Response {
 fn clean(ctx: &Ctx, history_keep: u32) -> Response {
     for (name, st) in ctx.reg.snapshot() {
         if st.status == Status::Exited {
-            let _ = ctx.eng.kill_session(&name);
+            let _ = ctx.eng(st.spec.engine).kill_session(&name);
             ctx.reg.remove(&name);
             let _ = std::fs::remove_file(&st.spec.spec_path);
             let _ = std::fs::remove_file(st.spec.spec_path.with_extension("json.go"));
@@ -684,19 +715,29 @@ fn clean(ctx: &Ctx, history_keep: u32) -> Response {
 fn janitor_loop(ctx: Arc<Ctx>) {
     loop {
         std::thread::sleep(Duration::from_secs(1));
+        // 收割孵化产物（holder）的僵尸
+        unsafe {
+            let mut st = 0 as libc::c_int;
+            while libc::waitpid(-1, &mut st, libc::WNOHANG) > 0 {}
+        }
         for (name, st) in ctx.reg.snapshot() {
+            let eng = ctx.eng(st.spec.engine);
             match st.status {
-                Status::Running => match ctx.eng.info(&name) {
+                Status::Running => match eng.info(&name) {
                     Ok(None) => finalize(&ctx, &name, None, "session-gone"),
                     Ok(Some(i)) if i.pane_dead => {
                         finalize(&ctx, &name, i.pane_dead_status, "exited")
                     }
-                    _ => cap_log(&ctx, &st),
+                    _ => {
+                        if st.spec.engine == EngineKind::Tmux {
+                            cap_log(&ctx, &st); // native 的日志限额由 holder 自管
+                        }
+                    }
                 },
                 Status::Exited => {
                     if let Some(ended) = st.ended_at_ms {
                         if now_ms() >= ended + EXIT_GRACE_MS {
-                            let _ = ctx.eng.kill_session(&name);
+                            let _ = eng.kill_session(&name);
                         }
                     }
                 }
@@ -705,7 +746,7 @@ fn janitor_loop(ctx: Arc<Ctx>) {
     }
 }
 
-/// 日志限额：超限即停 pipe → 截断 → 重开（FR8；轮转 M2）。
+/// 日志限额：超限即停 pipe → 截断 → 重开（FR8；轮转 M2）。仅 tmux 引擎路径。
 fn cap_log(ctx: &Ctx, st: &EntryState) {
     let max = st.spec.log_max_mb.saturating_mul(1024 * 1024);
     if max == 0 {
@@ -713,12 +754,16 @@ fn cap_log(ctx: &Ctx, st: &EntryState) {
     }
     if let Ok(md) = std::fs::metadata(&st.spec.log_path) {
         if md.len() > max {
-            let _ = ctx.eng.pipe(&st.spec.name, &st.spec.log_path, false);
+            let _ = ctx
+                .eng(st.spec.engine)
+                .pipe(&st.spec.name, &st.spec.log_path, false);
             let _ = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
                 .open(&st.spec.log_path);
-            let _ = ctx.eng.pipe(&st.spec.name, &st.spec.log_path, true);
+            let _ = ctx
+                .eng(st.spec.engine)
+                .pipe(&st.spec.name, &st.spec.log_path, true);
         }
     }
 }

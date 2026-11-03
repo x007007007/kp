@@ -4,7 +4,9 @@ use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-pub const PROTO_VERSION: u32 = 2;
+use crate::engine::{default_engine_tmux, EngineKind};
+
+pub const PROTO_VERSION: u32 = 3;
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
 /// 重复策略（FR3）。
@@ -32,6 +34,9 @@ pub struct SessionSpec {
     /// CLI -p 显式指定的策略：粘性判定最高优先级；daemon 消费后清空
     #[serde(default)]
     pub policy_cli: Option<Policy>,
+    /// 会话引擎（D12）；旧文件缺省为 tmux
+    #[serde(default = "default_engine_tmux")]
+    pub engine: EngineKind,
     pub log_path: PathBuf,
     pub spec_path: PathBuf,
     pub branch: String,
@@ -41,7 +46,7 @@ pub struct SessionSpec {
     pub log_max_mb: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub name: String,
     pub argv: Vec<String>,
@@ -59,6 +64,32 @@ pub struct SessionInfo {
     pub log_path: String,
     pub identity_hash: String,
     pub project_root: String,
+    /// 引擎种类（native | tmux）
+    #[serde(default = "crate::engine::default_engine_tmux")]
+    pub engine: crate::engine::EngineKind,
+}
+
+impl Default for SessionInfo {
+    fn default() -> Self {
+        SessionInfo {
+            name: String::new(),
+            argv: Vec::new(),
+            cwd: String::new(),
+            branch: String::new(),
+            policy: None,
+            status: String::new(),
+            started_at_ms: None,
+            ended_at_ms: None,
+            exit_code: None,
+            reason: String::new(),
+            pane_pid: None,
+            clients: 0,
+            log_path: String::new(),
+            identity_hash: String::new(),
+            project_root: String::new(),
+            engine: crate::engine::default_engine_tmux(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -162,7 +162,7 @@ ignore_env = ["PNPM_*"]         # 追加到内置默认忽略表
 - attach 路径冷启动 < 100ms（不含引擎自身启动）。
 - 客户端崩溃绝不影响会话进程；日志总量有上限（§FR8）。
 - 许可 MIT；不收集任何数据。
-- 依赖：tmux ≥ 3.0（未安装时 `kp` 给出一行安装指引并退出）。
+- 引擎（D12）：默认 **native**（自研 PTY holder，无外部依赖）；`[run].engine = "tmux"` 时需 tmux ≥ 3.0（未安装时给出安装指引并退出）。
 
 ## 7. 决策记录（已拍板）
 
@@ -179,6 +179,7 @@ ignore_env = ["PNPM_*"]         # 追加到内置默认忽略表
 | D9 | 不考虑多用户、Windows v1 不做 | |
 | D10 | kp 零子命令（纯包装），管理独立为 `kpm` | 解决 `kp ls`/`kp help` 等与系统命令的入口冲突 |
 | D11 | 策略粘性：`-p` 设置一次即按会话名持久化（policies.json），之后默认沿用 | 优先级 CLI > 粘性 > .kp.toml > 默认 |
+| D12 | 双引擎并存（v0.2）：**native PTY holder 为默认**（`[run].engine`，零外部依赖），tmux 保留为可选项；**screen 引擎否决**——无子进程退出码、无只读 attach、查询解析脆，原生引擎使其冗余 | trait 可扩展，未来如需 screen 为 drop-in |
 
 ## 8. 技术选型：tmux vs screen（引擎层）
 
