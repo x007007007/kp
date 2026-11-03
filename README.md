@@ -33,7 +33,20 @@ $ kp make run server 127.0.0.1
 $ cargo install kp-cli      # 安装 kp（包装命令）与 kpm（会话管理）
 ```
 
-依赖 [tmux](https://github.com/tmux/tmux) ≥ 3.0（macOS: `brew install tmux`）。kp 使用独立 tmux socket（`-L kp`），与你自己的 tmux 会话完全隔离。
+**macOS（Homebrew，推荐）**：
+
+```console
+$ brew tap x007007007/kp && brew install kp    # 自动带上 tmux 依赖
+```
+
+**直接下载**：到 [Releases](https://github.com/x007007007/kp/releases) 下载对应平台的产物——
+
+- macOS：`kp-installer-vX.dmg`（双击打开，运行 `install.sh`）或 `kp-cli-vX-<target>.tar.gz`；
+- Linux：`kp-cli-vX-<target>.tar.gz`，解压后把 `kp`、`kpm` 放进 PATH。
+
+无论哪种方式，kp 都需要 [tmux](https://github.com/tmux/tmux) ≥ 3.0（macOS: `brew install tmux`）。kp 使用独立 tmux socket（`-L kp`），与你自己的 tmux 会话完全隔离。
+
+> macOS 未公证提示：直接下载的二进制首次运行可能被 Gatekeeper 拦截，执行 `xattr -d com.apple.quarantine kp kpm`（或改用 brew 安装）即可。
 
 ## 用法
 
