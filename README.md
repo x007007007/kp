@@ -36,7 +36,7 @@ $ cargo install kp-cli      # 安装 kp（包装命令）与 kpm（会话管理�
 **macOS（Homebrew，推荐）**：
 
 ```console
-$ brew tap x007007007/kp && brew install kp    # 自动带上 tmux 依赖
+$ brew tap x007007007/kp && brew install kp    # 零外部依赖；tmux 为可选引擎
 ```
 
 **直接下载**：到 [Releases](https://github.com/x007007007/kp/releases) 下载对应平台的产物——
