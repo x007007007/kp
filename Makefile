@@ -12,6 +12,7 @@ help:
 	@echo "make build      编译（debug）"
 	@echo "make test       单元测试"
 	@echo "make lint       cargo fmt --check + clippy -D warnings"
+	@echo "make cov        测试覆盖率摘要（需 cargo-llvm-cov：cargo install cargo-llvm-cov）"
 	@echo "make dev-env    进入开发环境：kp = 开发中构建，状态沙箱于 .dev/"
 	@echo "make dev-clean  清理沙箱（停止会话、杀 dev daemon、删 .dev）"
 
@@ -24,6 +25,9 @@ test:
 lint:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
+
+cov:
+	cargo llvm-cov --summary-only
 
 dev-env: build
 	@command -v tmux >/dev/null 2>&1 || { echo "kp 需要 tmux >= 3.0（macOS: brew install tmux）"; exit 1; }

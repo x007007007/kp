@@ -408,3 +408,45 @@ match = "y*"
         assert!(!valid_name(""));
     }
 }
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use std::fs;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "kp-eng-{}-{}-{}",
+            tag,
+            std::process::id(),
+            crate::util::now_ms()
+        ));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn engine_valid_values() {
+        let d = tmpdir("valid");
+        let f = d.join("c.toml");
+        fs::write(&f, "[run]\nengine = \"native\"\n").unwrap();
+        assert_eq!(load(&d, Some(&f)).unwrap().run.engine, EngineKind::Native);
+        fs::write(&f, "[run]\nengine = \"tmux\"\n").unwrap();
+        assert_eq!(load(&d, Some(&f)).unwrap().run.engine, EngineKind::Tmux);
+    }
+
+    #[test]
+    fn engine_invalid_is_hard_error() {
+        let d = tmpdir("bad");
+        let f = d.join("c.toml");
+        fs::write(&f, "[run]\nengine = \"screen\"\n").unwrap();
+        let err = load(&d, Some(&f)).unwrap_err();
+        assert!(err.contains("run.engine 非法"), "got: {err}");
+    }
+
+    #[test]
+    fn default_engine_is_native() {
+        let d = tmpdir("def");
+        assert_eq!(load(&d, None).unwrap().run.engine, EngineKind::Native);
+    }
+}

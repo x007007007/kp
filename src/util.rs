@@ -45,3 +45,48 @@ pub fn fmt_duration(ms: u64) -> String {
         format!("{}h{}m", s / 3600, (s % 3600) / 60)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_duration_units() {
+        assert_eq!(fmt_duration(0), "0s");
+        assert_eq!(fmt_duration(59_000), "59s");
+        assert_eq!(fmt_duration(61_000), "1m1s");
+        assert_eq!(fmt_duration(3_600_000), "1h0m");
+        assert_eq!(fmt_duration(3_720_000), "1h2m");
+    }
+
+    #[test]
+    fn slug_maps_non_ascii_and_caps_length() {
+        assert_eq!(slug("abc-DEF_1", 10), "abc-DEF_1");
+        assert_eq!(slug("我的项目", 10), "----");
+        assert_eq!(slug("abcdefghijklmn", 4), "abcd");
+        assert_eq!(slug("", 5), "x");
+    }
+
+    #[test]
+    fn sh_quote_escapes_single_quotes() {
+        assert_eq!(sh_quote("a b"), "'a b'");
+        // it's → 'it'\''s'（POSIX 单引号转义标准写法）
+        let q = sh_quote("it's");
+        assert!(q.starts_with('\'') && q.ends_with('\''));
+        assert!(q.contains("'\\''"), "actual: {q}");
+    }
+
+    #[test]
+    fn to_hex_lowercase() {
+        assert_eq!(to_hex(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+        assert_eq!(to_hex(&[]), "");
+    }
+
+    #[test]
+    fn now_ms_monotonic() {
+        let a = now_ms();
+        let b = now_ms();
+        assert!(b >= a);
+        assert!(a > 1_700_000_000_000); // 2023 之后
+    }
+}

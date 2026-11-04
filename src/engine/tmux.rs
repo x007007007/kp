@@ -201,3 +201,42 @@ impl Engine for TmuxEngine {
         v
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_info_full() {
+        let i = parse_info("kp-x-1", "123|0||1700000000|2").unwrap();
+        assert_eq!(i.name, "kp-x-1");
+        assert_eq!(i.pane_pid, 123);
+        assert!(!i.pane_dead);
+        assert_eq!(i.pane_dead_status, None);
+        assert_eq!(i.attached, 2);
+    }
+
+    #[test]
+    fn parse_info_dead_with_status() {
+        let i = parse_info("kp-x", "99|1|130|0|0").unwrap();
+        assert!(i.pane_dead);
+        assert_eq!(i.pane_dead_status, Some(130));
+        assert_eq!(i.attached, 0);
+    }
+
+    #[test]
+    fn parse_info_garbage() {
+        assert!(parse_info("kp-x", "garbage").is_none());
+        assert!(parse_info("kp-x", "").is_none());
+    }
+
+    #[test]
+    fn error_matchers() {
+        assert!(session_missing("Can't find session kp-x"));
+        assert!(session_missing("can't find session kp-x"));
+        assert!(!session_missing("no server running on /tmp/x"));
+        assert!(no_server("no server running on /tmp/x"));
+        assert!(no_server("error connecting to /tmp/x: No such file"));
+        assert!(!no_server("Can't find session kp-x"));
+    }
+}

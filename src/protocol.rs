@@ -202,3 +202,77 @@ pub fn recv_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T>
     stream.read_exact(&mut buf)?;
     Ok(serde_json::from_slice(&buf)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_response_frame_roundtrip() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        send_frame(&mut a, &Request::Ping).unwrap();
+        let req: Request = recv_frame(&mut b).unwrap();
+        assert!(matches!(req, Request::Ping));
+
+        send_frame(&mut a, &Response::Pong).unwrap();
+        let resp: Response = recv_frame(&mut b).unwrap();
+        assert!(matches!(resp, Response::Pong));
+    }
+
+    #[test]
+    fn hello_version_roundtrip() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        send_frame(
+            &mut a,
+            &Request::Hello {
+                version: PROTO_VERSION,
+            },
+        )
+        .unwrap();
+        let req: Request = recv_frame(&mut b).unwrap();
+        assert!(matches!(req, Request::Hello { version } if version == PROTO_VERSION));
+
+        send_frame(
+            &mut a,
+            &Response::Hello {
+                version: PROTO_VERSION,
+            },
+        )
+        .unwrap();
+        let resp: Response = recv_frame(&mut b).unwrap();
+        assert!(matches!(resp, Response::Hello { version } if version == PROTO_VERSION));
+    }
+
+    #[test]
+    fn list_payload_roundtrip() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let infos = vec![SessionInfo {
+            name: "kp-x-1".into(),
+            status: "running".into(),
+            engine: crate::engine::EngineKind::Native,
+            ..Default::default()
+        }];
+        send_frame(&mut a, &Response::Sessions(infos.clone())).unwrap();
+        let resp: Response = recv_frame(&mut b).unwrap();
+        match resp {
+            Response::Sessions(v) => {
+                assert_eq!(v.len(), 1);
+                assert_eq!(v[0].name, "kp-x-1");
+                assert_eq!(v[0].engine, crate::engine::EngineKind::Native);
+            }
+            other => panic!("意外响应: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn engine_kind_serde() {
+        assert_eq!(
+            serde_json::from_str::<EngineKind>("\"native\"").unwrap(),
+            crate::engine::EngineKind::Native
+        );
+        assert_eq!(
+            serde_json::from_str::<EngineKind>("\"tmux\"").unwrap(),
+            crate::engine::EngineKind::Tmux
+        );
+    }
+}

@@ -858,3 +858,28 @@ pub fn cmd_report(name: &str, code: &str) -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_outcome_returns_3() {
+        let info = crate::protocol::SessionInfo {
+            name: "kp-x".into(),
+            ..Default::default()
+        };
+        let code = handle_outcome(&SpawnOutcome::Rejected { info });
+        assert_eq!(code, 3, "reject 策略退出码应为 3（FR3）");
+    }
+
+    #[test]
+    fn internal_cmd_guard() {
+        assert!(kp_cli_internal("_spawn"));
+        assert!(kp_cli_internal("_holder"));
+        assert!(kp_cli_internal("_attach"));
+        assert!(kp_cli_internal("_report"));
+        assert!(!kp_cli_internal("ls"));
+        assert!(!kp_cli_internal("sleep"));
+    }
+}

@@ -580,3 +580,23 @@ fn child_exec(spec: &SessionSpec, master: RawFd, slave: RawFd) -> ! {
 const TIOCSCTTY: libc::c_ulong = 0x20007461;
 #[cfg(not(target_os = "macos"))]
 const TIOCSCTTY: libc::c_ulong = libc::TIOCSCTTY as libc::c_ulong;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_layout() {
+        let f = frame(F_ATTACH, b"{\"a\":1}");
+        assert_eq!(&f[..4], &(7u32 + 1).to_be_bytes()); // 长度 = 载荷 + 类型字节
+        assert_eq!(f[4], F_ATTACH);
+        assert_eq!(&f[5..], b"{\"a\":1}");
+        assert_eq!(f.len(), 4 + 1 + 7);
+    }
+
+    #[test]
+    fn frame_empty_payload() {
+        let f = frame(F_KILL, &[]);
+        assert_eq!(f, vec![0, 0, 0, 1, F_KILL]);
+    }
+}

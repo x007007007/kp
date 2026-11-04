@@ -109,6 +109,13 @@ pub fn serve() -> Result<(), String> {
     });
     reconcile::run(&ctx);
 
+    // unix socket 路径上限（macOS SUN_LEN=104）：提前给出可行动的报错
+    if sock_path.to_string_lossy().len() > 100 {
+        return Err(format!(
+            "socket 路径过长（{}，上限 ~104）：请设置更短的 XDG_RUNTIME_DIR",
+            sock_path.display()
+        ));
+    }
     let listener = UnixListener::bind(&sock_path).map_err(|e| format!("绑定 socket 失败: {e}"))?;
     {
         let c = ctx.clone();

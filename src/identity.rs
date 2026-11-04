@@ -183,6 +183,32 @@ mod tests {
     }
 
     #[test]
+    fn session_name_format() {
+        let n = session_name("我的项目", "abcdef1234567890");
+        assert!(n.starts_with("kp-"), "前缀 kp-: {n}");
+        assert!(n.ends_with("-abcdef1234567890"));
+        assert!(n
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+
+        let n2 = session_name("abc", "hash");
+        assert_eq!(n2, "kp-abc-hash");
+    }
+
+    #[test]
+    fn git_info_non_git_dir() {
+        let d = std::env::temp_dir().join(format!(
+            "kp-git-{}-{}",
+            std::process::id(),
+            crate::util::now_ms()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(git_info(Some(&d)), "n/a");
+        assert_eq!(git_info(None), "n/a");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
     fn argv_difference_changes_identity() {
         let cwd = Path::new("/tmp/proj");
         let env = env_of(&[("PATH", "/usr/bin")]);
