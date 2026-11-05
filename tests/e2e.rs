@@ -149,6 +149,31 @@ fn wait_running(env: &Env, secs: u64) -> Option<String> {
 }
 
 #[test]
+fn e2e_fast_exit_records_code() {
+    let _g = lock();
+    let env = Env::new("fastexit");
+    let _guard = Guard::new(&env.root);
+    // 回归：瞬间退出的命令，holder 的 ReportDone 曾可能先于注册表插入到达 daemon，
+    // finalize 查不到条目即丢弃 → 退出码丢失、条目永远停留 running（幽灵会话）
+    let (code, out) = run(&kp(), &env, Some(&env.work), &["echo", "hi"]);
+    assert_eq!(code, 0, "kp echo hi 应以 0 退出: {out}");
+    assert!(
+        wait_until(|| ls(&env).contains("exit=0"), 8),
+        "registry 应记录真实退出码 0，实际: {}",
+        ls(&env)
+    );
+    // 连发多个瞬间退出会话，压缩竞态窗口
+    for _ in 0..5 {
+        let _ = run(&kp(), &env, Some(&env.work), &["sh", "-c", "true"]);
+    }
+    assert!(
+        wait_until(|| !ls(&env).contains(" running "), 8),
+        "不应有 running 残留: {}",
+        ls(&env)
+    );
+}
+
+#[test]
 fn e2e_native_lifecycle() {
     let _serial = lock();
     let env = Env::new("native");

@@ -260,7 +260,9 @@ fn write_spec_file(spec: &SessionSpec) -> Result<(), String> {
     f.write_all(&json).map_err(|e| e.to_string())
 }
 
-/// 新建会话：写 spec → tmux create → 观测项 → 注册表（架构 §4.1）。
+/// 新建会话：写 spec → **先注册** → 引擎 create（孵化）→ 观测项。
+/// 注册先于孵化是幽灵 running 的根因修复：快速退出的会话其 ReportDone
+/// 必须能命中已存在的条目，否则 finalize 静默丢弃、条目永停 Running。
 fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
     // 同名残留（注册表里没有的异常会话，任何引擎）先清掉
     for kind in [EngineKind::Native, EngineKind::Tmux] {
@@ -279,30 +281,43 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         .map_err(|e| format!("创建日志文件失败: {e}"))?;
 
     let eng = ctx.eng(spec.engine);
-    eng.create(&spec, &ctx.exe)?;
-    let pgid = eng.info(&spec.name).ok().flatten().map(|i| i.pane_pid);
-    if let Err(e) = eng.start_obs(&spec, &ctx.exe) {
-        let _ = eng.kill_session(&spec.name);
-        return Err(format!("设置观测项失败: {e}"));
-    }
-    // 观测项就位 → 放行 _spawn（两阶段启动）
-    let go = spec.spec_path.with_extension("json.go");
-    let _ = std::fs::write(&go, b"");
+    // 先注册再孵化（幽灵 running 的根因修复）：瞬间退出的命令，holder 的
+    // ReportDone 可能在 eng.create 返回前到达 daemon，finalize 查不到条目会
+    // 静默丢弃 → 退出码丢失、条目永远停在 Running。注册先于孵化后，
+    // ReportDone 必然晚于注册到达，竞态闭合。
     let name = spec.name.clone();
     ctx.reg.insert(
         &name,
         EntryState {
-            spec,
+            spec: spec.clone(),
             started_at_ms: now_ms(),
             ended_at_ms: None,
             exit_code: None,
             reason: String::new(),
             status: Status::Running,
-            pgid,
+            pgid: None,
             history_done: false,
         },
     );
     ctx.reg.persist();
+    if let Err(e) = eng.create(&spec, &ctx.exe) {
+        ctx.reg.remove(&name);
+        ctx.reg.persist();
+        return Err(e);
+    }
+    let pgid = eng.info(&spec.name).ok().flatten().map(|i| i.pane_pid);
+    if let Some(e) = ctx.reg.get(&name) {
+        e.st.lock().unwrap().pgid = pgid;
+    }
+    if let Err(e) = eng.start_obs(&spec, &ctx.exe) {
+        let _ = eng.kill_session(&spec.name);
+        ctx.reg.remove(&name);
+        ctx.reg.persist();
+        return Err(format!("设置观测项失败: {e}"));
+    }
+    // 观测项就位 → 放行 _spawn（两阶段启动）
+    let go = spec.spec_path.with_extension("json.go");
+    let _ = std::fs::write(&go, b"");
     let e = ctx.reg.get(&name).expect("刚插入的会话");
     Ok(build_info(ctx, &e, &name))
 }
@@ -731,7 +746,12 @@ fn janitor_loop(ctx: Arc<Ctx>) {
             let eng = ctx.eng(st.spec.engine);
             match st.status {
                 Status::Running => match eng.info(&name) {
-                    Ok(None) => finalize(&ctx, &name, None, "session-gone"),
+                    // 注册先于孵化（见 create_session）：启动窗口内引擎状态尚未就绪，
+                    // 不误判 session-gone；超过 2s 仍查无实况才视为 holder 崩溃/引擎残留丢失
+                    Ok(None) if now_ms().saturating_sub(st.started_at_ms) > 2000 => {
+                        finalize(&ctx, &name, None, "session-gone")
+                    }
+                    Ok(None) => {}
                     Ok(Some(i)) if i.pane_dead => {
                         finalize(&ctx, &name, i.pane_dead_status, "exited")
                     }
