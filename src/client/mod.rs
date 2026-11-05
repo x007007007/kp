@@ -321,7 +321,7 @@ fn banner(mode: &str, info: &crate::protocol::SessionInfo) {
     if let Some(p) = info.policy {
         eprintln!(" 策略   {:?}（重复时生效；-p 可临时覆盖并改设粘性策略）", p);
     }
-    eprintln!(" 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离");
+    eprintln!(" 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离（Ctrl-b Ctrl-b 发送字面 Ctrl-b）");
     eprintln!("───────────────────────────────────────────────");
 }
 

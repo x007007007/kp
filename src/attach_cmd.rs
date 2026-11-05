@@ -1,6 +1,8 @@
 //! `kp _attach`：native 引擎的客户端 attach 辅助进程。
 //! raw 模式中继：stdin → holder（写客户端），PTY 输出 → stdout；
 //! SIGWINCH → Resize；收到 Exited 帧后还原终端并以子进程退出码退出。
+//! 前缀键（tmux 同款）：Ctrl-b d = 脱离（会话继续跑）；Ctrl-b Ctrl-b = 发送字面 Ctrl-b；
+//! Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键）。
 
 use crate::holder::{frame, F_ATTACH, F_DATA, F_EXITED, F_INPUT, F_RESIZE, F_WELCOME};
 use serde_json::json;
@@ -72,6 +74,7 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
     let mut out_buf: Vec<u8> = Vec::new();
     let mut stdin_open = true;
     let mut exit_code: i32 = 0;
+    let mut prefix = false; // Ctrl-b 前缀模式（跨 read 保持）
     let sock_fd = stream.as_raw_fd();
     let wake_fd = pipefd[0];
 
@@ -123,7 +126,13 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
             if r == 0 {
                 stdin_open = false; // stdin 关闭（如 </dev/null）：停止轮询，不空转
             } else if r > 0 && !readonly {
-                let _ = stream.write_all(&frame(F_INPUT, &buf[..r as usize]));
+                let (bytes, detach) = prefix_filter(&mut prefix, &buf[..r as usize]);
+                if !bytes.is_empty() {
+                    let _ = stream.write_all(&frame(F_INPUT, &bytes));
+                }
+                if detach {
+                    break 'main; // Ctrl-b d：脱离（会话继续跑；终端还原在循环后统一做）
+                }
             }
         }
         // holder → 终端
@@ -203,6 +212,32 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
     exit_code
 }
 
+/// 前缀键状态机（tmux 同款语义，native 引擎 detach 的唯一入口）：
+/// - 普通模式收到 0x02（Ctrl-b）→ 进入前缀模式，本字节暂不转发；
+/// - 前缀模式收到 `d` → 脱离（返回 detach=true，字节不转发）；
+/// - 前缀模式收到 0x02 → 转发一个字面量 Ctrl-b；
+/// - 前缀模式收到其他字节 → 前缀 + 该字节原样转发（透明不吞键，如 emacs 的 C-b）。
+fn prefix_filter(prefix: &mut bool, buf: &[u8]) -> (Vec<u8>, bool) {
+    let mut out = Vec::with_capacity(buf.len() + 1);
+    for &b in buf {
+        if *prefix {
+            *prefix = false;
+            if b == b'd' {
+                return (out, true);
+            }
+            out.push(0x02);
+            if b != 0x02 {
+                out.push(b);
+            }
+        } else if b == 0x02 {
+            *prefix = true;
+        } else {
+            out.push(b);
+        }
+    }
+    (out, false)
+}
+
 fn winsize(fd: RawFd) -> (u16, u16) {
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
@@ -216,4 +251,66 @@ fn winsize(fd: RawFd) -> (u16, u16) {
 
 fn write(fd: RawFd, data: &[u8]) -> usize {
     unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()).max(0) as usize }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prefix_filter;
+
+    /// 返回 (转发字节, 是否 detach, 前缀模式是否仍挂起)
+    fn f(prefix: bool, buf: &[u8]) -> (Vec<u8>, bool, bool) {
+        let mut p = prefix;
+        let (out, detach) = prefix_filter(&mut p, buf);
+        (out, detach, p)
+    }
+
+    #[test]
+    fn plain_bytes_pass_through() {
+        let (out, detach, p) = f(false, b"abc\n");
+        assert_eq!(out, b"abc\n");
+        assert!(!detach && !p);
+    }
+
+    #[test]
+    fn prefix_d_detaches_without_forwarding() {
+        let (out, detach, p) = f(false, &[0x02, b'd']);
+        assert!(out.is_empty() && detach && !p);
+    }
+
+    #[test]
+    fn prefix_prefix_sends_literal_ctrl_b() {
+        let (out, detach, p) = f(false, &[0x02, 0x02]);
+        assert_eq!(out, &[0x02]);
+        assert!(!detach && !p);
+    }
+
+    #[test]
+    fn prefix_other_forwards_both_bytes() {
+        let (out, detach, p) = f(false, &[0x02, b'x']);
+        assert_eq!(out, &[0x02, b'x']);
+        assert!(!detach && !p);
+    }
+
+    #[test]
+    fn prefix_survives_read_split() {
+        // 前缀与其后按键分属两次 read：模式跨 read 保持
+        let (out1, detach, p) = f(false, &[0x02]);
+        assert!(out1.is_empty() && !detach && p);
+        let (out2, detach, p) = f(p, &[b'd']);
+        assert!(out2.is_empty() && detach && !p);
+    }
+
+    #[test]
+    fn literal_prefix_then_plain_d_is_not_detach() {
+        // C-b C-b d → 字面 C-b + 普通 d（前缀已被第二个 C-b 消费），不脱离
+        let (out, detach, p) = f(false, &[0x02, 0x02, b'd']);
+        assert_eq!(out, &[0x02, b'd']);
+        assert!(!detach && !p);
+    }
+
+    #[test]
+    fn lone_prefix_at_buffer_end_stays_pending() {
+        let (out, detach, p) = f(false, &[0x02]);
+        assert!(out.is_empty() && !detach && p);
+    }
 }

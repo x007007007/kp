@@ -426,7 +426,9 @@ holder: setsid → openpty → fork（子进程 setsid+TIOCSCTTY+exec 命令）
 ```
 
 客户端 attach = `kp _attach --socket <path> [--readonly]`：raw 模式中继（stdin→F_INPUT、
-Data→stdout、SIGWINCH→Resize、Exited→以子进程退出码退出）。
+Data→stdout、SIGWINCH→Resize、Exited→以子进程退出码退出）。前缀键与 tmux 对齐：
+Ctrl-b d = 脱离（仅退出 attach 客户端，会话继续跑）、Ctrl-b Ctrl-b = 发送字面 Ctrl-b、
+Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键；前缀模式跨 read 保持，只读接入不处理前缀）。
 
 相对 tmux 引擎的简化：`_spawn` 两阶段启动、`pane_dead_status`≥3.2、pane-died hook、
 `@kp_*` 元数据、remain-on-exit **全部消失**——holder 从头掌控 PTY 生命周期。
