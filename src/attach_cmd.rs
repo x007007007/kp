@@ -1,8 +1,8 @@
 //! `kp _attach`：native 引擎的客户端 attach 辅助进程。
 //! raw 模式中继：stdin → holder（写客户端），PTY 输出 → stdout；
 //! SIGWINCH → Resize；收到 Exited 帧后还原终端并以子进程退出码退出。
-//! 前缀键（tmux 同款）：Ctrl-b d = 脱离（会话继续跑）；Ctrl-b Ctrl-b = 发送字面 Ctrl-b；
-//! Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键）。
+//! 前缀键（tmux 同款）：Ctrl-b d = 脱离（会话继续跑；只读接入同样生效）；
+//! Ctrl-b Ctrl-b = 发送字面 Ctrl-b；Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键）。
 
 use crate::holder::{frame, F_ATTACH, F_DATA, F_EXITED, F_INPUT, F_RESIZE, F_WELCOME};
 use serde_json::json;
@@ -125,9 +125,10 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
                 unsafe { libc::read(stdin_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if r == 0 {
                 stdin_open = false; // stdin 关闭（如 </dev/null）：停止轮询，不空转
-            } else if r > 0 && !readonly {
+            } else if r > 0 {
                 let (bytes, detach) = prefix_filter(&mut prefix, &buf[..r as usize]);
-                if !bytes.is_empty() {
+                // 只读接入不转发任何键盘输入，但 Ctrl-b d 脱离同样生效（否则只读窗口只能关窗）
+                if !bytes.is_empty() && !readonly {
                     let _ = stream.write_all(&frame(F_INPUT, &bytes));
                 }
                 if detach {

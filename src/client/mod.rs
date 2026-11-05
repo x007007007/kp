@@ -321,7 +321,7 @@ fn banner(mode: &str, info: &crate::protocol::SessionInfo) {
     if let Some(p) = info.policy {
         eprintln!(" 策略   {:?}（重复时生效；-p 可临时覆盖并改设粘性策略）", p);
     }
-    eprintln!(" 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离（Ctrl-b Ctrl-b 发送字面 Ctrl-b）");
+    eprintln!(" 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离（只读窗口亦可）");
     eprintln!("───────────────────────────────────────────────");
 }
 
@@ -383,6 +383,18 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
                 )
             }
         };
+        // detach 快速判定：_attach 正常退出（Ctrl-b d 以 0 退出）且会话仍 running 同纪元
+        // → 立即反馈脱离。不能先等 WaitExit（长轮询挂起 3s，detach 后画面冻结无响应）。
+        if attach_status.success() {
+            if let Ok(Response::Detail(Some(i))) = rpc(Request::Status {
+                name: name.to_string(),
+            }) {
+                if i.status == "running" && base_started == i.started_at_ms {
+                    eprintln!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）");
+                    return 0;
+                }
+            }
+        }
         // 快速路径：WaitExit 已回（含退出原因）
         if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(3)) {
             if ei.reason == "restart" && wait_follow(name, &mut base_started) {
