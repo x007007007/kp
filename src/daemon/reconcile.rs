@@ -61,7 +61,10 @@ pub fn run(ctx: &Ctx) {
             if let Some(e) = ctx.reg.get(name) {
                 super::append_history_once(&e, None);
             }
+            super::dlog(&format!("reconcile 认领（已退出）{name}"));
             let _ = ctx.eng(*kind).kill_session(name);
+        } else {
+            super::dlog(&format!("reconcile 认领 {name} engine={kind:?}"));
         }
     }
 
@@ -88,6 +91,7 @@ pub fn run(ctx: &Ctx) {
                 );
             }
             ctx.reg.remove(&name);
+            super::dlog(&format!("reconcile 移除（引擎实况已无）{name}"));
         }
     }
     ctx.reg.persist();

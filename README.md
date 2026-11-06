@@ -75,7 +75,14 @@ $ kpm stop <name> | -a      # 杀整个进程组（TERM → 10s → KILL）
 $ kpm history               # 已结束会话的退出码与时长
 $ kpm clean                 # 清理已退出会话与过期日志
 $ kpm config                # 打印合并后的配置（排障用）
+$ kpm doctor                # 排障：二进制版本、daemon 身份、会话概览、日志尾部
 ```
+
+### 排障（debug）
+
+- **`kpm doctor`**：一站式体检——本机 kp/kpm 版本与改动时间、daemon 的版本/pid/exe（排查"改了代码没生效"）、会话概览、daemon.log 尾部。
+- **daemon.log**（`~/.local/state/kp/daemon.log`，路径随 `$XDG_STATE_HOME`）：daemon 与 holder 的全生命周期事件时间线——create/finalize/kill/cleanup/reconcile、退出码上报成功与否、attach 授权序列。报 issue 时请附上 `kpm doctor` 的输出。
+- **`KP_ATTACH_TRACE=1`**：native 引擎 attach 中继的逐帧跟踪（调试键盘转发/退出码时用）。
 
 ### 重复策略（`-p`）
 

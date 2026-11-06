@@ -25,6 +25,8 @@ pub struct Ctx {
     pub tmux: Box<dyn Engine>,
     pub reg: Registry,
     pub exe: PathBuf,
+    /// daemon 启动时刻（kpm doctor 自述用）
+    pub started_at_ms: u64,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// 策略粘性存储：会话名 → 生效策略（D11，policies.json 落盘）
     policies: Mutex<HashMap<String, Policy>>,
@@ -84,6 +86,16 @@ fn persist_policies(ctx: &Ctx) {
     }
 }
 
+/// daemon 生命周期日志（排障主线）：带 pid 与 ms 时间戳追加到 daemon.log，
+/// holder 的 stderr 也重定向到同一文件，全程一条时间线。事件级低频，不分级别。
+pub fn dlog(msg: &str) {
+    let Ok(p) = paths::daemon_log() else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        use std::io::Write;
+        let _ = writeln!(f, "kp daemon[{}]: {} @{}", std::process::id(), msg, now_ms());
+    }
+}
+
 pub fn serve() -> Result<(), String> {
     let rt = paths::runtime_dir().map_err(|e| e.to_string())?;
     paths::ensure_dir(&rt).map_err(|e| e.to_string())?;
@@ -104,6 +116,7 @@ pub fn serve() -> Result<(), String> {
         tmux: crate::engine::engine(EngineKind::Tmux),
         reg,
         exe,
+        started_at_ms: now_ms(),
         locks: Mutex::new(HashMap::new()),
         policies: Mutex::new(load_policies()),
     });
@@ -122,6 +135,13 @@ pub fn serve() -> Result<(), String> {
         std::thread::spawn(move || janitor_loop(c));
     }
     println!("kp daemon: 就绪（{}）", sock_path.display());
+    dlog(&format!(
+        "就绪 v{}（{}）pid={} exe={}",
+        env!("CARGO_PKG_VERSION"),
+        sock_path.display(),
+        std::process::id(),
+        ctx.exe.display()
+    ));
     for stream in listener.incoming().flatten() {
         let c = ctx.clone();
         std::thread::spawn(move || handle_conn(c, stream));
@@ -202,6 +222,12 @@ fn dispatch(ctx: &Ctx, req: Request) -> Response {
             Response::Ok
         }
         Request::Clean { history_keep } => clean(ctx, history_keep),
+        Request::DaemonInfo => Response::DaemonInfo {
+            pid: std::process::id() as i32,
+            exe: ctx.exe.to_string_lossy().to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            started_at_ms: ctx.started_at_ms,
+        },
     }
 }
 
@@ -281,6 +307,7 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         .map_err(|e| format!("创建日志文件失败: {e}"))?;
 
     let eng = ctx.eng(spec.engine);
+    dlog(&format!("create {} engine={:?}", spec.name, spec.engine));
     // 先注册再孵化（幽灵 running 的根因修复）：瞬间退出的命令，holder 的
     // ReportDone 可能在 eng.create 返回前到达 daemon，finalize 查不到条目会
     // 静默丢弃 → 退出码丢失、条目永远停在 Running。注册先于孵化后，
@@ -301,6 +328,7 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
     );
     ctx.reg.persist();
     if let Err(e) = eng.create(&spec, &ctx.exe) {
+        dlog(&format!("create {} 失败: {e}", spec.name));
         ctx.reg.remove(&name);
         ctx.reg.persist();
         return Err(e);
@@ -522,6 +550,7 @@ fn stop_all(ctx: &Ctx) -> Response {
 
 /// 杀整组：TERM → term_timeout → KILL（FR6）。返回退出码（remain-on-exit 可读）。
 fn kill_running(ctx: &Ctx, name: &str, reason: &str) -> Option<i32> {
+    dlog(&format!("kill {name} reason={reason}"));
     let entry = ctx.reg.get(name)?;
     let st = entry.st.lock().unwrap().clone();
     if st.status != Status::Running {
@@ -592,6 +621,8 @@ fn wait_dead(ctx: &Ctx, name: &str, timeout_s: u64) -> bool {
 /// 退出入账：状态、历史、唤醒 WaitExit（hook 与 janitor 双路径共用，幂等）。
 fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
     let Some(entry) = ctx.reg.get(name) else {
+        // 条目不存在：幽灵 running 的症状镜像（ReportDone 早于注册）。正常不应发生。
+        dlog(&format!("finalize {name} code={code:?} reason={reason} —— 条目不存在，丢弃"));
         return;
     };
     {
@@ -607,6 +638,7 @@ fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
             g.reason = reason.to_string();
         }
     }
+    dlog(&format!("finalize {name} code={code:?} reason={reason}"));
     entry.cv.notify_all();
     append_history_once(&entry, None);
     ctx.reg.persist();
@@ -614,6 +646,7 @@ fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
 
 /// 移除注册条目 + 清引擎侧残留 + 删 spec。
 fn cleanup_dead(ctx: &Ctx, name: &str) {
+    dlog(&format!("cleanup {name}"));
     let kind = ctx.reg.get(name).map(|e| e.st.lock().unwrap().spec.engine);
     ctx.reg.remove(name);
     match kind {
@@ -764,6 +797,7 @@ fn janitor_loop(ctx: Arc<Ctx>) {
                 Status::Exited => {
                     if let Some(ended) = st.ended_at_ms {
                         if now_ms() >= ended + EXIT_GRACE_MS {
+                            dlog(&format!("janitor 清尾 {name}（exited 已超宽限）"));
                             let _ = eng.kill_session(&name);
                         }
                     }

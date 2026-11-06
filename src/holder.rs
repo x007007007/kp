@@ -506,11 +506,14 @@ fn write_status(path: &Path, s: &HolderStatus) {
 }
 
 /// 退出码即时上报 daemon（janitor 轮询是兜底路径）。
+/// 失败链路必须有日志：daemon.log 是排障主线（stderr 重定向到同一文件）。
 fn report_daemon(name: &str, code: i32) {
     let Ok(sock) = paths::socket_path() else {
+        eprintln!("kp _holder[{name}]: ReportDone 未发送（socket 路径不可用）");
         return;
     };
     let Ok(mut s) = UnixStream::connect(sock) else {
+        eprintln!("kp _holder[{name}]: ReportDone 未发送（daemon 不在运行？）");
         return;
     };
     let _ = send_frame(
@@ -520,13 +523,21 @@ fn report_daemon(name: &str, code: i32) {
         },
     );
     if matches!(recv_frame::<Response>(&mut s), Ok(Response::Hello { .. })) {
-        let _ = send_frame(
+        let sent = send_frame(
             &mut s,
             &Request::ReportDone {
                 name: name.to_string(),
                 exit_code: Some(code),
             },
+        )
+        .is_ok();
+        eprintln!(
+            "kp _holder[{name}]: ReportDone code={code} {}@{}",
+            if sent { "" } else { "发送失败 " },
+            now_ms()
         );
+    } else {
+        eprintln!("kp _holder[{name}]: ReportDone 未发送（握手失败）");
     }
 }
 

@@ -56,6 +56,8 @@ enum Cmd {
     Clean,
     /// 打印合并后的配置与 services 候选链
     Config,
+    /// 排障信息：二进制版本、daemon 身份、会话概览、日志尾部
+    Doctor,
 }
 
 fn main() {
@@ -78,6 +80,7 @@ fn main() {
         Cmd::History { limit } => client::cmd_history(limit),
         Cmd::Clean => client::cmd_clean(),
         Cmd::Config => client::cmd_config(),
+        Cmd::Doctor => client::cmd_doctor(),
     };
     std::process::exit(code);
 }

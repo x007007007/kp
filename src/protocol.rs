@@ -162,6 +162,8 @@ pub enum Request {
     Clean {
         history_keep: u32,
     },
+    /// 排障信息（kpm doctor）：daemon 自述身份
+    DaemonInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +177,13 @@ pub enum Response {
     Detail(Option<SessionInfo>),
     Stopped(Vec<(String, Option<i32>)>),
     Cleaned,
+    /// daemon 自述：pid / 可执行文件 / 版本 / 启动时间（kpm doctor）
+    DaemonInfo {
+        pid: i32,
+        exe: String,
+        version: String,
+        started_at_ms: u64,
+    },
     Ok,
     Err { code: i32, message: String },
 }

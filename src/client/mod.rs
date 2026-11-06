@@ -8,6 +8,7 @@ use crate::protocol::{
 };
 use crate::util::{fmt_duration, now_ms, slug};
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -484,6 +485,77 @@ fn print_exit_summary(ei: &ExitInfo) -> i32 {
 }
 
 // ---------- 管理子命令（kpm 入口） ----------
+
+/// `kpm doctor`：排障信息一站式——本机二进制、daemon 身份、会话概览、日志尾部。
+/// 专治：二进制陈旧（exe mtime 与 daemon 不一致）、daemon 不在、日志在哪。
+pub fn cmd_doctor() -> i32 {
+    println!("── kp doctor ─────────────────────────────────");
+    // 本机二进制
+    for (label, exe) in [
+        ("kp ", std::env::current_exe().ok().map(|mut p| {
+            p.set_file_name("kp");
+            p
+        })),
+        ("kpm", std::env::current_exe().ok().map(|mut p| {
+            p.set_file_name("kpm");
+            p
+        })),
+    ] {
+        match exe {
+            Some(p) => {
+                let mtime_ms = fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64);
+                let age = mtime_ms
+                    .map(|m| fmt_duration(now_ms().saturating_sub(m)))
+                    .unwrap_or_else(|| "?".into());
+                println!(
+                    " {label}  v{}  {}（改动于 {} 前）",
+                    env!("CARGO_PKG_VERSION"),
+                    p.display(),
+                    age
+                );
+            }
+            None => println!(" {label}  可执行文件定位失败"),
+        }
+    }
+    println!(" 状态目录  {}", paths::state_dir().map(|p| p.display().to_string()).unwrap_or_default());
+    println!(" 运行目录  {}", paths::runtime_dir().map(|p| p.display().to_string()).unwrap_or_default());
+
+    // daemon 自述
+    match rpc(Request::DaemonInfo) {
+        Ok(Response::DaemonInfo { pid, exe, version, started_at_ms }) => {
+            let age = fmt_duration(now_ms().saturating_sub(started_at_ms));
+            println!(" daemon    v{version}  pid {pid}  已运行 {age}");
+            println!(" daemon exe  {exe}");
+        }
+        _ => println!(" daemon    未在运行（下次 kp/kpm 命令会自动孵化）"),
+    }
+
+    // 会话概览
+    if let Ok(Response::Sessions(list)) = rpc(Request::List) {
+        let running = list.iter().filter(|i| i.status == "running").count();
+        println!(" 会话      {running} running / {} 总计", list.len());
+        for i in &list {
+            println!("  · {} {}（{:?}）", i.name, i.status, i.policy);
+        }
+    }
+
+    // daemon.log 尾部
+    if let Ok(p) = paths::daemon_log() {
+        println!("── daemon.log 尾部（{}）──", p.display());
+        if let Ok(text) = fs::read_to_string(&p) {
+            let lines: Vec<&str> = text.lines().collect();
+            let skip = lines.len().saturating_sub(15);
+            for l in &lines[skip..] {
+                println!(" {l}");
+            }
+        }
+    }
+    0
+}
 
 pub fn cmd_ls() -> i32 {
     match rpc(Request::List) {
