@@ -6,10 +6,7 @@ pub fn home() -> io::Result<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "{}HOME",
-                crate::i18n::s("环境变量未设置: ", "environment variable not set: ")
-            ),
+            rust_i18n::t!("err.env_missing", name = "HOME").to_string(),
         )
     })
 }

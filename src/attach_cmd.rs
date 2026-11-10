@@ -5,7 +5,6 @@
 //! Ctrl-b Ctrl-b = 发送字面 Ctrl-b；Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键）。
 
 use crate::holder::{frame, F_ATTACH, F_DATA, F_EXITED, F_INPUT, F_RESIZE, F_WELCOME};
-use crate::i18n;
 use serde_json::json;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -13,13 +12,7 @@ use std::os::unix::net::UnixStream;
 
 pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
     let Ok(mut stream) = UnixStream::connect(sock) else {
-        eprintln!(
-            "kp: {}",
-            i18n::s(
-                "无法连接会话（holder 未运行？）",
-                "cannot connect to session (holder not running?)"
-            )
-        );
+        eprintln!("kp: {}", t!("err.cannot_connect_session"));
         return 1;
     };
     // stream 保持阻塞模式：读侧由 poll 控速，写侧数据量小由 holder 快速消费
@@ -73,10 +66,7 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
         if raw_ok {
             unsafe { libc::tcsetattr(stdin_fd, libc::TCSANOW, &saved) };
         }
-        eprintln!(
-            "kp: {}",
-            i18n::s("会话握手失败", "session handshake failed")
-        );
+        eprintln!("kp: {}", t!("err.session_handshake"));
         return 1;
     }
 
@@ -189,10 +179,7 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
                                 {
                                     if v["role"] == "read" && !readonly {
                                         // 写锁被占，holder 降级为只读
-                                        let notice = i18n::s(
-                                            "\r\nkp: 写锁被占用，本次接入为只读模式\r\n",
-                                            "\r\nkp: write lock busy; attaching as read-only\r\n",
-                                        );
+                                        let notice = t!("msg.readonly_notice");
                                         let _ = write(1, notice.as_bytes());
                                     }
                                 }

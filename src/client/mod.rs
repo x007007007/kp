@@ -1,6 +1,5 @@
 use crate::config;
 use crate::history::{self, HistoryEntry};
-use crate::i18n;
 use crate::identity;
 use crate::paths;
 use crate::protocol::{
@@ -63,10 +62,7 @@ fn connect_daemon() -> Result<UnixStream, RpcError> {
     }
     Err((
         1,
-        i18n::f(
-            format!("无法连接 kp daemon（{}）", sock.display()),
-            format!("cannot connect to kp daemon ({})", sock.display()),
-        ),
+        t!("err.connect_daemon", sock = sock.display()).to_string(),
     ))
 }
 
@@ -78,16 +74,7 @@ fn incubate() -> Result<(), String> {
         exe.set_file_name("kp");
     }
     if !exe.is_file() {
-        return Err(i18n::f(
-            format!(
-                "找不到 kp 二进制（{}）：kpm 与 kp 需安装在同一目录",
-                exe.display()
-            ),
-            format!(
-                "kp binary not found ({}): kpm and kp must be installed together",
-                exe.display()
-            ),
-        ));
+        return Err(t!("err.kp_binary_missing", path = exe.display()).to_string());
     }
     let log = paths::daemon_log().map_err(|e| e.to_string())?;
     if let Some(p) = log.parent() {
@@ -106,12 +93,7 @@ fn incubate() -> Result<(), String> {
         .stderr(std::process::Stdio::from(f))
         .process_group(0)
         .spawn()
-        .map_err(|e| {
-            i18n::f(
-                format!("孵化 daemon 失败: {e}"),
-                format!("failed to incubate daemon: {e}"),
-            )
-        })?;
+        .map_err(|e| t!("err.incubate_daemon", e = e).to_string())?;
     Ok(())
 }
 
@@ -156,15 +138,17 @@ fn rpc_once(req: Request) -> Result<Response, RpcError> {
         Response::Hello { version } => {
             return Err((
                 4,
-                i18n::f(
-                    format!("协议版本不匹配（client v{PROTO_VERSION} / daemon v{version}），请升级 kp"),
-                    format!("protocol version mismatch (client v{PROTO_VERSION} / daemon v{version}), please upgrade kp"),
-                ),
+                t!(
+                    "err.proto_mismatch_client",
+                    client_v = PROTO_VERSION,
+                    daemon_v = version
+                )
+                .to_string(),
             ))
         }
         // 旧版 daemon 对新版本 Hello 的拒绝形态是 Err{code:4}
         Response::Err { code: 4, message } => return Err((4, message)),
-        _ => return Err((1, i18n::s("daemon 握手异常", "daemon handshake error").into())),
+        _ => return Err((1, t!("err.daemon_handshake_abnormal").into())),
     }
     send_frame(&mut s, &req).map_err(|e| (1, e.to_string()))?;
     recv_frame(&mut s).map_err(|e| (1, e.to_string()))
@@ -174,30 +158,16 @@ fn rpc_once(req: Request) -> Result<Response, RpcError> {
 
 pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<String>) -> i32 {
     if argv.is_empty() {
-        return die(1, i18n::s("没有要运行的命令", "no command to run"));
+        return die(1, &t!("err.no_command"));
     }
     // 防线：内部子命令绝不允许被当作被包装命令（否则会话 pane 递归拉起会话 → fork bomb）
     let is_kp_self = argv[0] == "kp" || argv[0].ends_with("/kp");
     if argv.len() >= 2 && is_kp_self && kp_cli_internal(argv[1].as_str()) {
-        return die(
-            1,
-            &i18n::f(
-                format!("内部命令 {:?} 不可被包装", argv[1]),
-                format!("internal command {:?} cannot be wrapped", argv[1]),
-            ),
-        );
+        return die(1, t!("err.internal_wrapped", cmd = argv[1]).as_ref());
     }
     let cwd = match std::env::current_dir() {
         Ok(c) => c,
-        Err(e) => {
-            return die(
-                1,
-                &i18n::f(
-                    format!("无法获取当前目录: {e}"),
-                    format!("cannot get current directory: {e}"),
-                ),
-            )
-        }
+        Err(e) => return die(1, t!("err.cwd_failed", e = e).as_ref()),
     };
     let cfg = match config::load(&cwd, None) {
         Ok(c) => c,
@@ -214,13 +184,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
 
     let (name, policy) = if let Some(n) = name_opt {
         if !config::valid_name(&n) {
-            return die(
-                2,
-                &i18n::f(
-                    format!("非法会话名: {n:?}（^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$）"),
-                    format!("invalid session name: {n:?} (^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$)"),
-                ),
-            );
+            return die(2, t!("err.bad_session_name", n = n).as_ref());
         }
         (
             format!("kp-{}-{}", slug(&proj_name, 24), slug(&n, 32)),
@@ -243,15 +207,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
             l.join(format!("{name}.log")),
             s.join(format!("{name}.json")),
         ),
-        (Err(e), _) | (_, Err(e)) => {
-            return die(
-                1,
-                &i18n::f(
-                    format!("状态目录不可用: {e}"),
-                    format!("state directory unavailable: {e}"),
-                ),
-            )
-        }
+        (Err(e), _) | (_, Err(e)) => return die(1, t!("err.state_dir_failed", e = e).as_ref()),
     };
     let spec = SessionSpec {
         name: name.clone(),
@@ -275,16 +231,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
         match rpc(Request::Spawn { spec: spec.clone() }) {
             Ok(Response::Spawn(SpawnOutcome::Waiting { info })) => {
                 if !wait_printed {
-                    eprintln!(
-                        "{}",
-                        i18n::f(
-                            format!("⏳ kp: 等待现有会话 {} 退出（策略 wait）…", info.name),
-                            format!(
-                                "⏳ kp: waiting for session {} to exit (policy wait)…",
-                                info.name
-                            )
-                        )
-                    );
+                    eprintln!("{}", t!("msg.waiting_exit", name = info.name));
                     wait_printed = true;
                 }
                 if let Err(e) = wait_exit_forever(&info.name) {
@@ -293,7 +240,7 @@ pub fn cmd_run(name_opt: Option<String>, policy_opt: Option<Policy>, argv: Vec<S
             }
             Ok(Response::Spawn(outcome)) => return handle_outcome(&outcome),
             Ok(Response::Err { code, message }) => return die(code, &message),
-            Ok(_) => return die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+            Ok(_) => return die(1, &t!("err.daemon_unexpected")),
             Err((c, m)) => return die(c, &m),
         }
     }
@@ -309,7 +256,7 @@ fn wait_exit_forever(name: &str) -> Result<(), String> {
             Ok(Response::Exit(Some(_))) => return Ok(()),
             Ok(Response::Exit(None)) => continue, // 长轮询续期
             Ok(Response::Err { message, .. }) => return Err(message),
-            Ok(_) => return Err(i18n::s("daemon 响应异常", "unexpected daemon response").into()),
+            Ok(_) => return Err(t!("err.daemon_unexpected").into()),
             Err((_, m)) => return Err(m),
         }
     }
@@ -318,27 +265,15 @@ fn wait_exit_forever(name: &str) -> Result<(), String> {
 fn handle_outcome(outcome: &SpawnOutcome) -> i32 {
     match outcome {
         SpawnOutcome::Rejected { info } => {
-            eprintln!(
-                "{}",
-                i18n::f(
-                    format!(
-                        "✗ kp: 会话 {} 已在运行，当前命令被策略 reject 拒绝",
-                        info.name
-                    ),
-                    format!(
-                        "✗ kp: session {} is already running; rejected by policy reject",
-                        info.name
-                    ),
-                )
-            );
-            eprintln!("  {} kpm attach {}", i18n::s("接入:", "attach:"), info.name);
-            eprintln!("  {}", i18n::s("查看: kpm ls", "list: kpm ls"));
+            eprintln!("{}", t!("err.rejected", name = info.name));
+            eprintln!("  {} kpm attach {}", t!("hint.attach"), info.name);
+            eprintln!("  {}", t!("hint.list"));
             3
         }
         SpawnOutcome::Started {
             info, attach_args, ..
         } => {
-            banner(i18n::s("已启动", "started"), info);
+            banner(&t!("mode.started"), info);
             attach_session(&info.name, attach_args)
         }
         SpawnOutcome::Attached {
@@ -348,13 +283,9 @@ fn handle_outcome(outcome: &SpawnOutcome) -> i32 {
         } => {
             banner(
                 &if *writable {
-                    i18n::s("已接入（可写）", "attached (writable)").to_string()
+                    t!("mode.attached_rw").to_string()
                 } else {
-                    i18n::s(
-                        "已接入（只读 · 多读单写）",
-                        "attached (read-only · multi-read single-writer)",
-                    )
-                    .to_string()
+                    t!("mode.attached_ro").to_string()
                 },
                 info,
             );
@@ -367,15 +298,9 @@ fn handle_outcome(outcome: &SpawnOutcome) -> i32 {
             ..
         } => {
             if let Some(c) = old_exit {
-                eprintln!(
-                    "{}",
-                    i18n::f(
-                        format!("kp: 旧实例已停止（退出码 {c}）"),
-                        format!("kp: old instance stopped (exit code {c})")
-                    )
-                );
+                eprintln!("{}", t!("msg.old_stopped", c = c));
             }
-            banner(i18n::s("已重启", "restarted"), info);
+            banner(&t!("mode.restarted"), info);
             attach_session(&info.name, attach_args)
         }
         SpawnOutcome::Waiting { .. } => unreachable!("Waiting 在 cmd_run 中处理"),
@@ -386,56 +311,27 @@ fn banner(mode: &str, info: &crate::protocol::SessionInfo) {
     eprintln!("─ kp ──────────────────────────────────────────");
     eprintln!(
         "{}",
-        i18n::f(
-            format!(" 会话   {}（{mode}）", info.name),
-            format!(" session  {} ({mode})", info.name)
-        )
+        t!("msg.banner_session", name = info.name, mode = mode)
     );
+    eprintln!("{}", t!("msg.banner_command", cmd = info.argv.join(" ")));
     eprintln!(
         "{}",
-        i18n::f(
-            format!(" 命令   {}", info.argv.join(" ")),
-            format!(" command  {}", info.argv.join(" "))
-        )
-    );
-    eprintln!(
-        "{}",
-        i18n::f(
-            format!(" 目录   {}   分支 {}", info.cwd, info.branch),
-            format!(" dir      {}   branch {}", info.cwd, info.branch)
-        )
+        t!("msg.banner_dir", cwd = info.cwd, branch = info.branch)
     );
     if let (Some(pid), Some(t0)) = (info.pane_pid, info.started_at_ms) {
         eprintln!(
             "{}",
-            i18n::f(
-                format!(
-                    " PID    {pid}   已运行 {}",
-                    fmt_duration(now_ms().saturating_sub(t0))
-                ),
-                format!(
-                    " pid      {pid}   up {}",
-                    fmt_duration(now_ms().saturating_sub(t0))
-                ),
+            t!(
+                "msg.banner_pid",
+                pid = pid,
+                age = fmt_duration(now_ms().saturating_sub(t0))
             )
         );
     }
     if let Some(p) = info.policy {
-        eprintln!(
-            "{}",
-            i18n::f(
-                format!(" 策略   {:?}（重复时生效；-p 可临时覆盖并改设粘性策略）", p),
-                format!(
-                    " policy   {:?} (applies on repeat; -p overrides once and sticks)",
-                    p
-                ),
-            )
-        );
+        eprintln!("{}", t!("msg.banner_policy", policy = format!("{:?}", p)));
     }
-    eprintln!("{}", i18n::s(
-        " 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离（只读窗口亦可）",
-        " exit    Ctrl-C in any window = end session and close all; Ctrl-b d = detach only (works when read-only)",
-    ));
+    eprintln!("{}", t!("msg.banner_exit"));
     eprintln!("───────────────────────────────────────────────");
 }
 
@@ -472,11 +368,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
                         return;
                     }
                     Ok(_) => {
-                        let _ = tx.send(Err(i18n::s(
-                            "daemon 响应异常",
-                            "unexpected daemon response",
-                        )
-                        .into()));
+                        let _ = tx.send(Err(t!("err.daemon_unexpected").to_string()));
                         return;
                     }
                     Err((_, m)) => {
@@ -492,15 +384,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
             .env_remove("TMUX_PANE");
         let attach_status = match cmd.status() {
             Ok(s) => s,
-            Err(e) => {
-                return die(
-                    1,
-                    &i18n::f(
-                        format!("无法启动 tmux attach（需要 tmux ≥ 3.0，macOS: brew install tmux）: {e}"),
-                        format!("failed to launch tmux attach (requires tmux >= 3.0, macOS: brew install tmux): {e}"),
-                    ),
-                )
-            }
+            Err(e) => return die(1, t!("err.tmux_attach", e = e).as_ref()),
         };
         // detach 快速判定：_attach 正常退出（Ctrl-b d 以 0 退出）且会话仍 running 同纪元
         // → 立即反馈脱离。不能先等 WaitExit（长轮询挂起 3s，detach 后画面冻结无响应）。
@@ -509,10 +393,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
                 name: name.to_string(),
             }) {
                 if i.status == "running" && base_started == i.started_at_ms {
-                    eprintln!("{}", i18n::f(
-                        format!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）"),
-                        format!("\nkp: detached from {name} (session keeps running; re-attach with kpm attach {name})"),
-                    ));
+                    eprintln!("{}", t!("msg.detached", name = name, name = name));
                     return 0;
                 }
             }
@@ -520,13 +401,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
         // 快速路径：WaitExit 已回（含退出原因）
         if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(3)) {
             if ei.reason == "restart" && wait_follow(name, &mut base_started) {
-                eprintln!(
-                    "{}",
-                    i18n::s(
-                        "kp: 服务已重启，已重新接入新实例",
-                        "kp: service restarted; re-attached to the new instance"
-                    )
-                );
+                eprintln!("{}", t!("msg.restart_followed"));
                 continue;
             }
             return print_exit_summary(&ei);
@@ -546,10 +421,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
                         base_started = i.started_at_ms;
                         break;
                     }
-                    eprintln!("{}", i18n::f(
-                        format!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）"),
-                        format!("\nkp: detached from {name} (session keeps running; re-attach with kpm attach {name})"),
-                    ));
+                    eprintln!("{}", t!("msg.detached", name = name, name = name));
                     return 0;
                 }
                 Ok(Response::Detail(Some(i))) if i.status == "exited" && i.reason != "restart" => {
@@ -561,36 +433,21 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
             }
         }
         if followed {
-            eprintln!(
-                "{}",
-                i18n::s(
-                    "kp: 服务已重启，已重新接入新实例",
-                    "kp: service restarted; re-attached to the new instance"
-                )
-            );
+            eprintln!("{}", t!("msg.restart_followed"));
             continue;
         }
         if session_ended {
             if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(5)) {
                 return print_exit_summary(&ei);
             }
-            eprintln!(
-                "{}",
-                i18n::f(
-                    "\nkp: 会话已结束（详见 kpm history）".to_string(),
-                    "\nkp: session has ended (see kpm history)".to_string(),
-                )
-            );
+            eprintln!("{}", t!("msg.session_ended"));
             return if attach_status.success() {
                 0
             } else {
                 attach_status.code().unwrap_or(1)
             };
         }
-        eprintln!("{}", i18n::f(
-            format!("\nkp: 已脱离会话 {name}（会话继续运行；恢复: kpm attach {name}）"),
-            format!("\nkp: detached from {name} (session keeps running; re-attach with kpm attach {name})"),
-        ));
+        eprintln!("{}", t!("msg.detached", name = name, name = name));
         return 0;
     }
 }
@@ -621,21 +478,13 @@ fn wait_follow(name: &str, base: &mut Option<u64>) -> bool {
 fn print_exit_summary(ei: &ExitInfo) -> i32 {
     eprintln!(
         "{}",
-        i18n::f(
-            format!(
-                "\nkp: 会话退出 · 退出码 {} · 用时 {}",
-                ei.exit_code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "?".into()),
-                fmt_duration(ei.duration_ms)
-            ),
-            format!(
-                "\nkp: session exited · code {} · took {}",
-                ei.exit_code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "?".into()),
-                fmt_duration(ei.duration_ms)
-            ),
+        t!(
+            "msg.exit_summary",
+            code = ei
+                .exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "?".into()),
+            dur = fmt_duration(ei.duration_ms)
         )
     );
     ei.exit_code.unwrap_or(0)
@@ -676,60 +525,34 @@ pub fn cmd_doctor() -> i32 {
                     .unwrap_or_else(|| "?".into());
                 println!(
                     "{}",
-                    i18n::f(
-                        format!(
-                            " {label}  v{}  {}（改动于 {} 前）",
-                            env!("CARGO_PKG_VERSION"),
-                            p.display(),
-                            age
-                        ),
-                        format!(
-                            " {label}  v{}  {} (modified {} ago)",
-                            env!("CARGO_PKG_VERSION"),
-                            p.display(),
-                            age
-                        ),
+                    t!(
+                        "doctor.binary",
+                        label = label,
+                        ver = env!("CARGO_PKG_VERSION"),
+                        path = p.display(),
+                        age = age
                     )
                 );
             }
-            None => println!(
-                " {label}  {}",
-                i18n::s("可执行文件定位失败", "executable not located")
-            ),
+            None => println!(" {label}  {}", t!("doctor.exe_missing")),
         }
     }
     println!(
         " {}",
-        i18n::f(
-            format!(
-                "状态目录  {}",
-                paths::state_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            ),
-            format!(
-                "state dir {}",
-                paths::state_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            ),
+        t!(
+            "doctor.state_dir",
+            p = paths::state_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         )
     );
     println!(
         " {}",
-        i18n::f(
-            format!(
-                "运行目录  {}",
-                paths::runtime_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            ),
-            format!(
-                "runtime dir {}",
-                paths::runtime_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            ),
+        t!(
+            "doctor.runtime_dir",
+            p = paths::runtime_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         )
     );
 
@@ -744,20 +567,11 @@ pub fn cmd_doctor() -> i32 {
             let age = fmt_duration(now_ms().saturating_sub(started_at_ms));
             println!(
                 "{}",
-                i18n::f(
-                    format!(" daemon    v{version}  pid {pid}  已运行 {age}"),
-                    format!(" daemon    v{version}  pid {pid}  up {age}"),
-                )
+                t!("doctor.daemon", version = version, pid = pid, age = age)
             );
             println!(" daemon exe  {exe}");
         }
-        _ => println!(
-            " {}",
-            i18n::s(
-                "daemon    未在运行（下次 kp/kpm 命令会自动孵化）",
-                "daemon    not running (next kp/kpm command incubates it)"
-            )
-        ),
+        _ => println!(" {}", t!("doctor.daemon_off")),
     }
 
     // 会话概览
@@ -765,10 +579,7 @@ pub fn cmd_doctor() -> i32 {
         let running = list.iter().filter(|i| i.status == "running").count();
         println!(
             "{}",
-            i18n::f(
-                format!(" 会话      {running} running / {} 总计", list.len()),
-                format!(" sessions  {running} running / {} total", list.len()),
-            )
+            t!("doctor.sessions", running = running, total = list.len())
         );
         for i in &list {
             println!("  · {} {}（{:?}）", i.name, i.status, i.policy);
@@ -777,13 +588,7 @@ pub fn cmd_doctor() -> i32 {
 
     // daemon.log 尾部
     if let Ok(p) = paths::daemon_log() {
-        println!(
-            "{}",
-            i18n::f(
-                format!("── daemon.log 尾部（{}）──", p.display()),
-                format!("── daemon.log tail ({}) ──", p.display()),
-            )
-        );
+        println!("{}", t!("doctor.log_tail", p = p.display()));
         if let Ok(text) = fs::read_to_string(&p) {
             let lines: Vec<&str> = text.lines().collect();
             let skip = lines.len().saturating_sub(15);
@@ -799,7 +604,7 @@ pub fn cmd_ls() -> i32 {
     match rpc(Request::List) {
         Ok(Response::Sessions(list)) => {
             if list.is_empty() {
-                println!("{}", i18n::s("没有会话", "no sessions"));
+                println!("{}", t!("ls.none"));
                 return 0;
             }
             let w = list
@@ -854,7 +659,7 @@ pub fn cmd_ls() -> i32 {
             0
         }
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -864,45 +669,42 @@ pub fn cmd_status(name: &str) -> i32 {
         name: name.to_string(),
     }) {
         Ok(Response::Detail(Some(i))) => {
-            println!("{}  {}", i18n::s("名称", "name"), i.name);
-            println!("{}  {}", i18n::s("状态", "status"), i.status);
-            println!("{}  {}", i18n::s("命令", "command"), i.argv.join(" "));
-            println!("{}  {}", i18n::s("工作目录", "cwd"), i.cwd);
+            println!("{}  {}", t!("status.name"), i.name);
+            println!("{}  {}", t!("status.status"), i.status);
+            println!("{}  {}", t!("status.command"), i.argv.join(" "));
+            println!("{}  {}", t!("status.cwd"), i.cwd);
             if !i.project_root.is_empty() {
-                println!("{}  {}", i18n::s("项目根", "project root"), i.project_root);
+                println!("{}  {}", t!("status.project_root"), i.project_root);
             }
-            println!("{}  {}", i18n::s("分支", "branch"), i.branch);
+            println!("{}  {}", t!("status.branch"), i.branch);
             if let Some(p) = i.policy {
                 println!(
                     "{}  {:?}{}",
-                    i18n::s("策略", "policy"),
+                    t!("status.policy"),
                     p,
-                    i18n::s("（粘性；-p 可改设）", " (sticky; change with -p)")
+                    t!("status.policy_sticky")
                 );
             }
             if let Some(pid) = i.pane_pid {
                 println!(
                     "{}  {pid}{}",
-                    i18n::s("PID", "pid"),
-                    i18n::f(
-                        format!("（客户端 {} 个）", i.clients),
-                        format!(" ({} clients)", i.clients)
-                    )
+                    t!("status.pid_label"),
+                    t!("status.clients", n = i.clients)
                 );
             }
             if let Some(t) = i.started_at_ms {
                 print!(
                     "{}  {}{}",
-                    i18n::s("开始于", "started"),
+                    t!("status.started_at"),
                     fmt_duration(now_ms().saturating_sub(t)),
-                    i18n::s(" 前", " ago")
+                    t!("common.ago_suffix")
                 );
                 if let Some(e) = i.ended_at_ms {
                     println!(
                         "{} {}{}",
-                        i18n::s("，结束于", ", ended"),
+                        t!("status.ended_at"),
                         fmt_duration(now_ms().saturating_sub(e)),
-                        i18n::s(" 前", " ago")
+                        t!("common.ago_suffix")
                     );
                 } else {
                     println!();
@@ -911,31 +713,22 @@ pub fn cmd_status(name: &str) -> i32 {
             if i.status == "exited" {
                 println!(
                     "{}  {}{}",
-                    i18n::s("退出", "exit"),
+                    t!("status.exit_label"),
                     i.exit_code
                         .map(|c| c.to_string())
                         .unwrap_or_else(|| "?".into()),
-                    i18n::f(
-                        format!("（原因: {}）", i.reason),
-                        format!(" (reason: {})", i.reason)
-                    ),
+                    t!("status.reason", r = i.reason),
                 );
             }
-            println!("{}  {}", i18n::s("日志", "log"), i.log_path);
+            println!("{}  {}", t!("status.log"), i.log_path);
             if !i.identity_hash.is_empty() {
-                println!("{}  {}", i18n::s("身份", "identity"), i.identity_hash);
+                println!("{}  {}", t!("status.identity"), i.identity_hash);
             }
             0
         }
-        Ok(Response::Detail(None)) => die(
-            1,
-            &i18n::f(
-                format!("没有会话 {name}"),
-                format!("no such session {name}"),
-            ),
-        ),
+        Ok(Response::Detail(None)) => die(1, t!("err.no_such_session", name = name).as_ref()),
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -946,7 +739,7 @@ pub fn cmd_attach(name: &str) -> i32 {
     }) {
         Ok(Response::Attach(outcome)) => handle_outcome(&outcome),
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -963,7 +756,7 @@ pub fn cmd_restart(name: &str, fresh_env: bool) -> i32 {
     }) {
         Ok(Response::Spawn(outcome)) => handle_outcome(&outcome),
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -973,13 +766,7 @@ pub fn cmd_stop(name: Option<String>, all: bool) -> i32 {
         Request::StopAll
     } else {
         let Some(n) = name else {
-            return die(
-                1,
-                i18n::s(
-                    "用法: kpm stop <name> 或 kpm stop --all",
-                    "usage: kpm stop <name> or kpm stop --all",
-                ),
-            );
+            return die(1, &t!("err.stop_usage"));
         };
         Request::Stop { name: n }
     };
@@ -994,7 +781,7 @@ pub fn cmd_stop(name: Option<String>, all: bool) -> i32 {
             0
         }
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -1006,7 +793,7 @@ pub fn cmd_logs(name: &str, follow: bool, lines: usize) -> i32 {
         Ok(Response::Detail(Some(i))) => PathBuf::from(i.log_path),
         Ok(Response::Detail(None)) => return die(1, &format!("没有会话 {name}")),
         Ok(Response::Err { code, message }) => return die(code, &message),
-        Ok(_) => return die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => return die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => return die(c, &m),
     };
     for l in tail_lines(&path, lines) {
@@ -1075,7 +862,7 @@ pub fn cmd_history(limit: usize) -> i32 {
     let mut all = history::read(&path);
     all.reverse();
     if all.is_empty() {
-        println!("{}", i18n::s("没有历史记录", "no history"));
+        println!("{}", t!("history.none"));
         return 0;
     }
     let (h_time, h_name, h_exit, h_dur, h_reason, h_cmd) =
@@ -1085,7 +872,7 @@ pub fn cmd_history(limit: usize) -> i32 {
         let ago = fmt_duration(now_ms().saturating_sub(e.ended_at_ms));
         println!(
             "{:<10} {:<10} {:>6} {:>8}  {:<14} {}",
-            i18n::f(format!("{ago}前"), format!("{ago} ago")),
+            t!("common.ago", ago = ago).to_string(),
             e.name,
             e.exit_code
                 .map(|c| c.to_string())
@@ -1110,17 +897,11 @@ pub fn cmd_clean() -> i32 {
         history_keep: cfg.run.history_keep,
     }) {
         Ok(Response::Cleaned) => {
-            println!(
-                "{}",
-                i18n::s(
-                    "✓ 已清理已退出会话、spec 与过期历史",
-                    "✓ cleaned exited sessions, specs and stale history"
-                )
-            );
+            println!("{}", t!("msg.cleaned"));
             0
         }
         Ok(Response::Err { code, message }) => die(code, &message),
-        Ok(_) => die(1, i18n::s("daemon 响应异常", "unexpected daemon response")),
+        Ok(_) => die(1, &t!("err.daemon_unexpected")),
         Err((c, m)) => die(c, &m),
     }
 }
@@ -1134,53 +915,30 @@ pub fn cmd_config() -> i32 {
         Ok(c) => c,
         Err(e) => return die(2, &e),
     };
-    println!(
-        "{}",
-        i18n::f(
-            format!(
-                "项目根     {}",
-                match (&cfg.project_root, &cfg.project_file) {
-                    (Some(root), Some(f)) => format!("{}（发现 {}）", root.display(), f.display()),
-                    _ => "未发现（无 .kp.toml，身份退回调用目录）".to_string(),
+    let root_detail = match (&cfg.project_root, &cfg.project_file) {
+        (Some(root), Some(f)) => {
+            t!("cfg.root_found", root = root.display(), f = f.display()).to_string()
+        }
+        _ => t!("cfg.root_missing").to_string(),
+    };
+    println!("{}  {}", t!("cfg.project_root"), root_detail);
+    let global_detail = cfg
+        .global_file
+        .as_ref()
+        .map(|p| {
+            t!(
+                "cfg.global_state",
+                p = p.display(),
+                state = if p.is_file() {
+                    t!("cfg.exists").to_string()
+                } else {
+                    t!("cfg.missing").to_string()
                 }
-            ),
-            format!(
-                "project root {}",
-                match (&cfg.project_root, &cfg.project_file) {
-                    (Some(root), Some(f)) => format!("{} (found {})", root.display(), f.display()),
-                    _ => "not found (no .kp.toml; identity falls back to the invocation directory)"
-                        .to_string(),
-                }
-            ),
-        )
-    );
-    println!(
-        "{}",
-        i18n::f(
-            format!(
-                "全局配置   {}",
-                cfg.global_file
-                    .as_ref()
-                    .map(|p| format!(
-                        "{}（{}）",
-                        p.display(),
-                        if p.is_file() { "存在" } else { "不存在" }
-                    ))
-                    .unwrap_or_else(|| "默认路径解析失败".into())
-            ),
-            format!(
-                "global config {}",
-                cfg.global_file
-                    .as_ref()
-                    .map(|p| format!(
-                        "{} ({})",
-                        p.display(),
-                        if p.is_file() { "exists" } else { "missing" }
-                    ))
-                    .unwrap_or_else(|| "default path resolution failed".into())
-            ),
-        )
-    );
+            )
+            .to_string()
+        })
+        .unwrap_or_else(|| t!("cfg.global_path_fail").to_string());
+    println!("{}  {}", t!("cfg.global"), global_detail);
     let r = &cfg.run;
     println!(
         "[run]      default_policy={:?} term_timeout={}s log_max_mb={}MB history_keep={} log_keep={} notify={}",
@@ -1188,36 +946,18 @@ pub fn cmd_config() -> i32 {
     );
     println!(
         "{}",
-        i18n::f(
-            format!(
-                "[identity] ignore_env = {:?}（追加于内置默认表之上）",
-                cfg.ignore_env
-            ),
-            format!(
-                "[identity] ignore_env = {:?} (appended on top of the built-in table)",
-                cfg.ignore_env
-            ),
-        )
+        t!("cfg.ignore_env", v = format!("{:?}", cfg.ignore_env))
     );
     if cfg.services.is_empty() {
-        println!(
-            "{}",
-            i18n::s("[[services]] 无声明", "[[services]] none declared")
-        );
+        println!("{}", t!("cfg.services_none"));
         return 0;
     }
-    println!(
-        "{}",
-        i18n::s(
-            "[[services]] 候选链（项目层优先，首个 match 命中生效）：",
-            "[[services]] candidate chain (project layer first; first match wins):",
-        )
-    );
+    println!("{}", t!("cfg.services_chain"));
     for (idx, s) in cfg.services.iter().enumerate() {
         let layer = if idx < cfg.project_services {
-            i18n::s("项目", "project")
+            t!("cfg.layer_project")
         } else {
-            i18n::s("全局", "global")
+            t!("cfg.layer_global")
         };
         println!(
             "  {:>2}. [{layer}] name={:?} match={:?} cwd={:?} policy={}",

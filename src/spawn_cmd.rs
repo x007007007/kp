@@ -6,7 +6,6 @@
 //! fork 后 _spawn 仍是进程组 leader（pane pid 不变），整组杀灭语义不受影响。
 //! 上报走 RPC（`_report`），pane-died hook 退为兜底路径。
 
-use crate::i18n;
 use crate::protocol::SessionSpec;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
@@ -18,7 +17,7 @@ pub fn run(spec_path: &Path) -> i32 {
         Err(e) => {
             eprintln!(
                 "kp _spawn: {} {}: {e}",
-                i18n::s("读取 spec 失败", "failed to read spec"),
+                t!("err.read_spec"),
                 spec_path.display()
             );
             return 127;
@@ -27,10 +26,7 @@ pub fn run(spec_path: &Path) -> i32 {
     let spec: SessionSpec = match serde_json::from_str(&text) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "kp _spawn: {}: {e}",
-                i18n::s("解析 spec 失败", "failed to parse spec")
-            );
+            eprintln!("kp _spawn: {}: {e}", t!("err.parse_spec"));
             return 127;
         }
     };
@@ -53,18 +49,11 @@ pub fn run(spec_path: &Path) -> i32 {
     std::env::set_var("KP_SESSION_ID", &spec.name);
 
     if let Err(e) = std::env::set_current_dir(&spec.cwd) {
-        eprintln!(
-            "kp _spawn: {} {}: {e}",
-            i18n::s("无法进入工作目录", "cannot enter working directory"),
-            spec.cwd.display()
-        );
+        eprintln!("kp _spawn: {} {}: {e}", t!("err.chdir"), spec.cwd.display());
         return 1;
     }
     if spec.argv.is_empty() {
-        eprintln!(
-            "kp _spawn: {}",
-            i18n::s("spec.argv 为空", "spec.argv is empty")
-        );
+        eprintln!("kp _spawn: {}", t!("err.empty_argv"));
         return 127;
     }
 
@@ -94,7 +83,7 @@ pub fn run(spec_path: &Path) -> i32 {
         Err(e) => {
             eprintln!(
                 "kp _spawn: {} {}: {e}",
-                i18n::s("启动失败", "failed to start"),
+                t!("err.start_failed"),
                 spec.argv[0]
             );
             return 127;
@@ -103,10 +92,7 @@ pub fn run(spec_path: &Path) -> i32 {
     let status = match child.wait() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "kp _spawn: {}: {e}",
-                i18n::s("waitpid 失败", "waitpid failed")
-            );
+            eprintln!("kp _spawn: {}: {e}", t!("err.waitpid_failed"));
             return 1;
         }
     };

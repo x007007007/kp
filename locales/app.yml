@@ -1,0 +1,457 @@
+_version: 2
+
+"cfg.exists":
+  en: "exists"
+  zh: "存在"
+
+"cfg.global":
+  en: "global config"
+  zh: "全局配置"
+
+"cfg.global_path_fail":
+  en: "default path resolution failed"
+  zh: "默认路径解析失败"
+
+"cfg.global_state":
+  en: "%{p} (%{state})"
+  zh: "%{p}（%{state}）"
+
+"cfg.ignore_env":
+  en: "[identity] ignore_env = %{v} (appended on top of the built-in table)"
+  zh: "[identity] ignore_env = %{v}（追加于内置默认表之上）"
+
+"cfg.layer_global":
+  en: "global"
+  zh: "全局"
+
+"cfg.layer_project":
+  en: "project"
+  zh: "项目"
+
+"cfg.missing":
+  en: "missing"
+  zh: "不存在"
+
+"cfg.project_root":
+  en: "project root"
+  zh: "项目根"
+
+"cfg.root_found":
+  en: "%{root} (found %{f})"
+  zh: "%{root}（发现 %{f}）"
+
+"cfg.root_missing":
+  en: "not found (no .kp.toml; identity falls back to the invocation directory)"
+  zh: "未发现（无 .kp.toml，身份退回调用目录）"
+
+"cfg.services_chain":
+  en: "[[services]] candidate chain (project layer first; first match wins):"
+  zh: "[[services]] 候选链（项目层优先，首个 match 命中生效）："
+
+"cfg.services_none":
+  en: "[[services]] none declared"
+  zh: "[[services]] 无声明"
+
+"common.ago":
+  en: "%{ago} ago"
+  zh: "%{ago}前"
+
+"common.ago_suffix":
+  en: " ago"
+  zh: " 前"
+
+"doctor.binary":
+  en: " %{label}  v%{ver}  %{path} (modified %{age} ago)"
+  zh: " %{label}  v%{ver}  %{path}（改动于 %{age} 前）"
+
+"doctor.daemon":
+  en: " daemon    v%{version}  pid %{pid}  up %{age}"
+  zh: " daemon    v%{version}  pid %{pid}  已运行 %{age}"
+
+"doctor.daemon_off":
+  en: "daemon    not running (next kp/kpm command incubates it)"
+  zh: "daemon    未在运行（下次 kp/kpm 命令会自动孵化）"
+
+"doctor.exe_missing":
+  en: "executable not located"
+  zh: "可执行文件定位失败"
+
+"doctor.log_tail":
+  en: "── daemon.log tail (%{p}) ──"
+  zh: "── daemon.log 尾部（%{p}）──"
+
+"doctor.runtime_dir":
+  en: "runtime dir %{p}"
+  zh: "运行目录  %{p}"
+
+"doctor.sessions":
+  en: " sessions  %{running} running / %{total} total"
+  zh: " 会话      %{running} running / %{total} 总计"
+
+"doctor.state_dir":
+  en: "state dir %{p}"
+  zh: "状态目录  %{p}"
+
+"err.bad_session_name":
+  en: "invalid session name: %{n} (^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$)"
+  zh: "非法会话名: %{n}（^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$）"
+
+"err.bind_failed":
+  en: "failed to bind socket: %{e}"
+  zh: "绑定 socket 失败: %{e}"
+
+"err.cannot_connect_session":
+  en: "cannot connect to session (holder not running?)"
+  zh: "无法连接会话（holder 未运行？）"
+
+"err.cfg_engine":
+  en: "invalid run.engine: %{e} (native | tmux)"
+  zh: "run.engine 非法: %{e}（native | tmux）"
+
+"err.cfg_history_keep":
+  en: "run.history_keep out of range: %{v} (10..=10000)"
+  zh: "run.history_keep 越界: %{v}（10..=10000）"
+
+"err.cfg_log_max":
+  en: "run.log_max_mb out of range: %{v} (1..=2048)"
+  zh: "run.log_max_mb 越界: %{v}（1..=2048）"
+
+"err.cfg_parse":
+  en: "config error in %{p}: %{e}"
+  zh: "配置错误 %{p}: %{e}"
+
+"err.cfg_read":
+  en: "failed to read %{p}: %{e}"
+  zh: "读取 %{p}: %{e}"
+
+"err.cfg_service_dup":
+  en: "duplicate service.name: %{name} (must be unique across the merge chain)"
+  zh: "service.name 重复: %{name}（合并链上必须唯一）"
+
+"err.cfg_service_match":
+  en: "service %{name} has an empty match"
+  zh: "service %{name} 的 match 不能为空"
+
+"err.cfg_service_name":
+  en: "invalid service.name: %{name} (must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$)"
+  zh: "service.name 非法: %{name}（需匹配 ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$）"
+
+"err.cfg_term_timeout":
+  en: "run.term_timeout out of range: %{v} (1..=600)"
+  zh: "run.term_timeout 越界: %{v}（1..=600）"
+
+"err.chdir":
+  en: "cannot enter working directory"
+  zh: "无法进入工作目录"
+
+"err.connect_daemon":
+  en: "cannot connect to kp daemon (%{sock})"
+  zh: "无法连接 kp daemon（%{sock}）"
+
+"err.create_log":
+  en: "failed to create log file: %{e}"
+  zh: "创建日志文件失败: %{e}"
+
+"err.cwd_failed":
+  en: "cannot get current directory: %{e}"
+  zh: "无法获取当前目录: %{e}"
+
+"err.daemon_handshake_abnormal":
+  en: "daemon handshake error"
+  zh: "daemon 握手异常"
+
+"err.daemon_running":
+  en: "a kp daemon is already running"
+  zh: "已有 kp daemon 在运行"
+
+"err.daemon_unexpected":
+  en: "unexpected daemon response"
+  zh: "daemon 响应异常"
+
+"err.duplicate_hello":
+  en: "duplicate handshake"
+  zh: "重复握手"
+
+"err.empty_argv":
+  en: "spec.argv is empty"
+  zh: "spec.argv 为空"
+
+"err.env_missing":
+  en: "environment variable not set: %{name}"
+  zh: "环境变量未设置: %{name}"
+
+"err.env_missing_prefix":
+  en: "environment variable not set: "
+  zh: "环境变量未设置: "
+
+"err.first_hello":
+  en: "first frame must be Hello"
+  zh: "首帧必须是 Hello"
+
+"err.holder_timeout":
+  en: "holder start timeout (see daemon.log)"
+  zh: "holder 启动超时（详见 daemon.log）"
+
+"err.incubate_daemon":
+  en: "failed to incubate daemon: %{e}"
+  zh: "孵化 daemon 失败: %{e}"
+
+"err.incubate_holder":
+  en: "failed to incubate holder: %{e}"
+  zh: "孵化 holder 失败: %{e}"
+
+"err.internal_wrapped":
+  en: "internal command %{cmd} cannot be wrapped"
+  zh: "内部命令 %{cmd} 不可被包装"
+
+"err.kill_group":
+  en: "failed to kill process group -%{pgid} (signal %{sig}): %{err}"
+  zh: "kill 进程组 -%{pgid}（信号 %{sig}）: %{err}"
+
+"err.kp_binary_missing":
+  en: "kp binary not found (%{path}): kpm and kp must be installed together"
+  zh: "找不到 kp 二进制（%{path}）：kpm 与 kp 需安装在同一目录"
+
+"err.missing_socket":
+  en: "missing --socket"
+  zh: "缺少 --socket"
+
+"err.missing_spec":
+  en: "missing --spec"
+  zh: "缺少 --spec"
+
+"err.no_command":
+  en: "no command to run"
+  zh: "没有要运行的命令"
+
+"err.no_such_session":
+  en: "no such session %{name}"
+  zh: "没有会话 %{name}"
+
+"err.no_such_session_ls":
+  en: "no such session %{name} (see kpm ls)"
+  zh: "没有会话 %{name}（kpm ls 查看）"
+
+"err.parse_spec":
+  en: "failed to parse spec"
+  zh: "解析 spec 失败"
+
+"err.proto_mismatch_client":
+  en: "protocol version mismatch (client v%{PROTO_VERSION} / daemon v%{version}), please upgrade kp"
+  zh: "协议版本不匹配（client v%{PROTO_VERSION} / daemon v%{version}），请升级 kp"
+
+"err.proto_mismatch_daemon":
+  en: "protocol version mismatch: client v%{version} / daemon v%{PROTO_VERSION}, please upgrade kp"
+  zh: "协议版本不匹配：client v%{version} / daemon v%{PROTO_VERSION}，请升级 kp"
+
+"err.read_spec":
+  en: "failed to read spec"
+  zh: "读取 spec 失败"
+
+"err.rejected":
+  en: "✗ kp: session %{name} is already running; rejected by policy reject"
+  zh: "✗ kp: 会话 %{name} 已在运行，当前命令被策略 reject 拒绝"
+
+"err.report_usage":
+  en: "usage: kp _report <name> <code>"
+  zh: "用法 kp _report <name> <code>"
+
+"err.session_exited":
+  en: "session %{name} has exited (code %{code}, reason %{reason}); restart with kpm restart %{name}"
+  zh: "会话 %{name} 已退出（退出码 %{code}，原因 %{reason}）；重启: kpm restart %{name}"
+
+"err.session_handshake":
+  en: "session handshake failed"
+  zh: "会话握手失败"
+
+"err.sock_too_long":
+  en: "socket path too long (%{path}, limit ~104): set a shorter XDG_RUNTIME_DIR"
+  zh: "socket 路径过长（%{path}，上限 ~104）：请设置更短的 XDG_RUNTIME_DIR"
+
+"err.start_failed":
+  en: "failed to start"
+  zh: "启动失败"
+
+"err.start_obs":
+  en: "failed to set up observability: %{e}"
+  zh: "设置观测项失败: %{e}"
+
+"err.state_dir_failed":
+  en: "state directory unavailable: %{e}"
+  zh: "状态目录不可用: %{e}"
+
+"err.stop_usage":
+  en: "usage: kpm stop <name> or kpm stop --all"
+  zh: "用法: kpm stop <name> 或 kpm stop --all"
+
+"err.tmux_attach":
+  en: "failed to launch tmux attach (requires tmux >= 3.0, macOS: brew install tmux): %{e}"
+  zh: "无法启动 tmux attach（需要 tmux ≥ 3.0，macOS: brew install tmux）: %{e}"
+
+"err.tmux_run":
+  en: "failed to run tmux (is it installed? macOS: brew install tmux): %{e}"
+  zh: "执行 tmux 失败（是否已安装？macOS: brew install tmux）: %{e}"
+
+"err.too_many_instances":
+  en: "too many parallel instances (>64)"
+  zh: "并行实例过多（>64）"
+
+"err.waitpid_failed":
+  en: "waitpid failed"
+  zh: "waitpid 失败"
+
+"err.write_spec":
+  en: "failed to write spec: %{e}"
+  zh: "写 spec 失败: %{e}"
+
+"hint.attach":
+  en: "attach:"
+  zh: "接入:"
+
+"hint.list":
+  en: "list: kpm ls"
+  zh: "查看: kpm ls"
+
+"history.none":
+  en: "no history"
+  zh: "没有历史记录"
+
+"ls.none":
+  en: "no sessions"
+  zh: "没有会话"
+
+"mode.attached_ro":
+  en: "attached (read-only · multi-read single-writer)"
+  zh: "已接入（只读 · 多读单写）"
+
+"mode.attached_rw":
+  en: "attached (writable)"
+  zh: "已接入（可写）"
+
+"mode.restarted":
+  en: "restarted"
+  zh: "已重启"
+
+"mode.started":
+  en: "started"
+  zh: "已启动"
+
+"msg.banner_command":
+  en: " command  %{cmd}"
+  zh: " 命令   %{cmd}"
+
+"msg.banner_dir":
+  en: " dir      %{cwd}   branch %{branch}"
+  zh: " 目录   %{cwd}   分支 %{branch}"
+
+"msg.banner_exit":
+  en: " exit    Ctrl-C in any window = end session and close all; Ctrl-b d = detach only (works when read-only)"
+  zh: " 退出   任一窗口 Ctrl-C = 结束会话并退出全部窗口；Ctrl-b d = 仅脱离（只读窗口亦可）"
+
+"msg.banner_pid":
+  en: " pid      %{pid}   up %{age}"
+  zh: " PID    %{pid}   已运行 %{age}"
+
+"msg.banner_policy":
+  en: " policy   %{policy} (applies on repeat; -p overrides once and sticks)"
+  zh: " 策略   %{policy}（重复时生效；-p 可临时覆盖并改设粘性策略）"
+
+"msg.banner_session":
+  en: " session  %{name} (%{mode})"
+  zh: " 会话   %{name}（%{mode}）"
+
+"msg.cleaned":
+  en: "✓ cleaned exited sessions, specs and stale history"
+  zh: "✓ 已清理已退出会话、spec 与过期历史"
+
+"msg.detached":
+  en: "\nkp: detached from %{name} (session keeps running; re-attach with kpm attach %{name})"
+  zh: "\nkp: 已脱离会话 %{name}（会话继续运行；恢复: kpm attach %{name}）"
+
+"msg.exit_summary":
+  en: "\nkp: session exited · code %{code} · took %{dur}"
+  zh: "\nkp: 会话退出 · 退出码 %{code} · 用时 %{dur}"
+
+"msg.old_stopped":
+  en: "kp: old instance stopped (exit code %{c})"
+  zh: "kp: 旧实例已停止（退出码 %{c}）"
+
+"msg.readonly_notice":
+  en: "\r\nkp: write lock busy; attaching as read-only\r\n"
+  zh: "\r\nkp: 写锁被占用，本次接入为只读模式\r\n"
+
+"msg.restart_followed":
+  en: "kp: service restarted; re-attached to the new instance"
+  zh: "kp: 服务已重启，已重新接入新实例"
+
+"msg.session_ended":
+  en: ""
+  zh: "\nkp: 会话已结束（详见 kpm history）"
+
+"msg.waiting_exit":
+  en: "⏳ kp: waiting for session %{name} to exit (policy wait)…"
+  zh: "⏳ kp: 等待现有会话 %{name} 退出（策略 wait）…"
+
+"status.branch":
+  en: "branch"
+  zh: "分支"
+
+"status.clients":
+  en: " (%{n} clients)"
+  zh: "（客户端 %{n} 个）"
+
+"status.command":
+  en: "command"
+  zh: "命令"
+
+"status.cwd":
+  en: "cwd"
+  zh: "工作目录"
+
+"status.ended_at":
+  en: ", ended"
+  zh: "，结束于"
+
+"status.exit_label":
+  en: "exit"
+  zh: "退出"
+
+"status.identity":
+  en: "identity"
+  zh: "身份"
+
+"status.log":
+  en: "log"
+  zh: "日志"
+
+"status.name":
+  en: "name"
+  zh: "名称"
+
+"status.pid_label":
+  en: "pid"
+  zh: "PID"
+
+"status.policy":
+  en: "policy"
+  zh: "策略"
+
+"status.policy_sticky":
+  en: " (sticky; change with -p)"
+  zh: "（粘性；-p 可改设）"
+
+"status.project_root":
+  en: "project root"
+  zh: "项目根"
+
+"status.reason":
+  en: " (reason: %{r})"
+  zh: "（原因: %{r}）"
+
+"status.started_at":
+  en: "started"
+  zh: "开始于"
+
+"status.status":
+  en: "status"
+  zh: "状态"

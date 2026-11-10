@@ -3,9 +3,11 @@
 //! 会话管理命令在 `kpm`；`_spawn`/`_holder`/`_attach`/`_report` 为内部命令。
 
 use clap::Parser;
-use kp_cli::i18n;
+rust_i18n::i18n!("locales", fallback = "en");
+
 use kp_cli::protocol::Policy;
 use kp_cli::{attach_cmd, client, daemon, holder, spawn_cmd};
+use rust_i18n::t;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -35,6 +37,7 @@ struct Cli {
 }
 
 fn main() {
+    kp_cli::i18n::init();
     // 管道下游关闭（如 kpm status | grep -q）时静默退出，而非 println panic
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 
@@ -58,14 +61,14 @@ fn main() {
         Some((a, rest)) if a == "_spawn" => match parse_flag(rest, "--spec") {
             Some(p) => spawn_cmd::run(&PathBuf::from(p)),
             None => {
-                eprintln!("kp _spawn: {}", i18n::s("缺少 --spec", "missing --spec"));
+                eprintln!("kp _spawn: {}", t!("err.missing_spec"));
                 2
             }
         },
         Some((a, rest)) if a == "_holder" => match parse_flag(rest, "--spec") {
             Some(p) => holder::run(&PathBuf::from(p)),
             None => {
-                eprintln!("kp _holder: {}", i18n::s("缺少 --spec", "missing --spec"));
+                eprintln!("kp _holder: {}", t!("err.missing_spec"));
                 2
             }
         },
@@ -75,10 +78,7 @@ fn main() {
             match sock {
                 Some(s) => attach_cmd::run(&s, readonly),
                 None => {
-                    eprintln!(
-                        "kp _attach: {}",
-                        i18n::s("缺少 --socket", "missing --socket")
-                    );
+                    eprintln!("kp _attach: {}", t!("err.missing_socket"));
                     2
                 }
             }
@@ -86,13 +86,7 @@ fn main() {
         Some((a, rest)) if a == "_report" => match (rest.first(), rest.get(1)) {
             (Some(n), Some(c)) => client::cmd_report(n, c),
             _ => {
-                eprintln!(
-                    "kp _report: {}",
-                    i18n::s(
-                        "用法 kp _report <name> <code>",
-                        "usage: kp _report <name> <code>"
-                    )
-                );
+                eprintln!("kp _report: {}", t!("err.report_usage"));
                 2
             }
         },

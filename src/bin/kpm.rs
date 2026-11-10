@@ -61,6 +61,7 @@ enum Cmd {
 }
 
 fn main() {
+    kp_cli::i18n::init();
     // 管道下游关闭（如 kpm status | grep -q）时静默退出，而非 println panic
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 

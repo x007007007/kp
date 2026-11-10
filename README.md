@@ -93,7 +93,9 @@ $ KP_LANG=en kp echo hi     # 强制英文
 $ KP_LANG=zh kpm doctor     # 强制中文
 ```
 
-UI 文案（banner/错误/提示）已双语；`--help` 帮助文本与 daemon.log 日志暂为中文/技术性英文，后续版本跟进。
+实现基于 [rust-i18n](https://github.com/rust-i18n/rust-i18n)：译文在 `locales/app.yml`（zh/en 并排、编译期内嵌二进制），调用点统一 `t!("key")`。**新增语言**：在 `locales/app.yml` 为现有键追加一个 locale 段（如 `ja:`），并在 `src/i18n.rs` 的 `parse()` 加语言码映射即可，缺键自动回退英文。
+
+`--help` 帮助文本与 daemon.log 日志暂不本地化（后续跟进）。
 
 ### 重复策略（`-p`）
 

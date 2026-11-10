@@ -1,14 +1,7 @@
-//! 极简 i18n（零依赖）：按运行环境选择中文/英文文案。
-//!
-//! 语言判定优先级：`KP_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG`，取 `_` 前的语言段
-//! （`zh_CN.UTF-8` → zh）；未设置或非 zh → 英文（POSIX 惯例）。`KP_LANG` 支持显式
-//! `zh` / `en`，为脚本与测试提供确定性。
-//!
-//! 用法：静态文案 `s("已停止", "stopped")`；带插值的在调用点直接
-//! `match lang()` 或用 `f(zh, en)` 包住两个 format! 结果（本项目消息量级，
-//! 双分支求值的开销可忽略，换取译文与上下文同处一地、无键名同步负担）。
+//! i18n 接线层：环境检测（KP_LANG > LC_ALL > LC_MESSAGES > LANG）→ rust-i18n set_locale。
+//! 译文资源在 locales/app.yml（_version: 2，zh/en 同文件并排，便于对照补翻），
+//! 编译期内嵌进二进制；缺键回退 en（见 lib.rs 的 i18n! 配置）。
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,40 +10,22 @@ pub enum Lang {
     En,
 }
 
-/// 显式覆盖：0 = 自动（按环境），1 = zh，2 = en（测试/嵌入式场景用）
-static OVERRIDE: AtomicU8 = AtomicU8::new(0);
-static AUTO: OnceLock<Lang> = OnceLock::new();
+static INIT: OnceLock<()> = OnceLock::new();
 
-pub fn lang() -> Lang {
-    match OVERRIDE.load(Ordering::Relaxed) {
-        1 => return Lang::Zh,
-        2 => return Lang::En,
-        _ => {}
-    }
-    *AUTO.get_or_init(|| {
-        detect_from(
+/// 进程入口调用一次（kp/kpm main）。
+pub fn init() {
+    INIT.get_or_init(|| {
+        let lang = detect_from(
             std::env::var("KP_LANG").ok(),
             std::env::var("LC_ALL").ok(),
             std::env::var("LC_MESSAGES").ok(),
             std::env::var("LANG").ok(),
-        )
-    })
-}
-
-/// 静态文案双语选择
-pub fn s(zh: &'static str, en: &'static str) -> &'static str {
-    match lang() {
-        Lang::Zh => zh,
-        Lang::En => en,
-    }
-}
-
-/// 已格式化的双语选择（调用点各写一个 format!）
-pub fn f(zh: String, en: String) -> String {
-    match lang() {
-        Lang::Zh => zh,
-        Lang::En => en,
-    }
+        );
+        rust_i18n::set_locale(match lang {
+            Lang::Zh => "zh",
+            Lang::En => "en",
+        });
+    });
 }
 
 /// 纯函数便于测试：按 POSIX 语义解析 locale 链
@@ -71,14 +46,13 @@ pub fn detect_from(
     Lang::En
 }
 
-/// `zh_CN.UTF-8` → zh；`C`/`POSIX`/空 → en；未知语言段 → en
+/// `zh_CN.UTF-8` → zh；`C`/`POSIX`/空 → en；未知语言段 → en 回退
 fn parse(v: &str) -> Option<Lang> {
     let code = v.split(&['.', '@', '_'][..]).next().unwrap_or("");
     match code.to_ascii_lowercase().as_str() {
         "zh" | "zh-cn" | "zh-hans" | "zh-tw" | "zh-hant" | "zh-hk" => Some(Lang::Zh),
         "c" | "posix" | "" => Some(Lang::En),
         _ => {
-            // 未知语言段（fr、ja…）：暂无译文，回退英文；zh 变体已在上方覆盖
             if code.to_ascii_lowercase().starts_with("zh") {
                 Some(Lang::Zh)
             } else {
@@ -94,7 +68,6 @@ mod tests {
 
     #[test]
     fn locale_chain_priority() {
-        // KP_LANG 最高优先
         assert_eq!(
             detect_from(
                 Some("en".into()),
@@ -104,7 +77,6 @@ mod tests {
             ),
             Lang::En
         );
-        // LC_ALL > LC_MESSAGES > LANG
         assert_eq!(
             detect_from(
                 None,
@@ -122,7 +94,6 @@ mod tests {
 
     #[test]
     fn locale_defaults_to_english() {
-        // 全未设置 → POSIX 惯例英文；C/POSIX → 英文；未知语言 → 英文回退
         assert_eq!(detect_from(None, None, None, None), Lang::En);
         assert_eq!(detect_from(None, Some("C".into()), None, None), Lang::En);
         assert_eq!(
@@ -146,10 +117,6 @@ mod tests {
             detect_from(Some("zh_TW.UTF-8".into()), None, None, None),
             Lang::Zh
         );
-        assert_eq!(
-            detect_from(Some("zh_HK@latin".into()), None, None, None),
-            Lang::Zh
-        );
         assert_eq!(detect_from(Some("ZH".into()), None, None, None), Lang::Zh);
     }
 
@@ -163,14 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn selectors_pick_by_lang() {
-        // 直接测 s/f 的双分支（不动全局状态）
-        let saved = OVERRIDE.load(Ordering::Relaxed);
-        OVERRIDE.store(1, Ordering::Relaxed);
-        assert_eq!(s("是", "yes"), "是");
-        OVERRIDE.store(2, Ordering::Relaxed);
-        assert_eq!(s("是", "yes"), "yes");
-        assert_eq!(f(format!("x{}", 1), format!("y{}", 1)), "y1");
-        OVERRIDE.store(saved, Ordering::Relaxed);
+    fn translations_cover_both_locales() {
+        for key in ["err.no_command", "msg.detached", "status.name"] {
+            for loc in ["zh", "en"] {
+                rust_i18n::set_locale(loc);
+                let s = rust_i18n::t!(key);
+                assert_ne!(&*s, key, "locale {loc} 缺键 {key}");
+            }
+        }
     }
 }

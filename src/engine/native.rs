@@ -3,7 +3,6 @@
 //! daemon 通过读文件 + 探活 holder 实现 info/list/reconcile。
 
 use super::{Engine, EngineKind, EngineSessionInfo};
-use crate::i18n;
 use crate::protocol::SessionSpec;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -63,12 +62,7 @@ impl Engine for PtyEngine {
             .stdout(std::process::Stdio::from(log2))
             .stderr(std::process::Stdio::from(log))
             .spawn()
-            .map_err(|e| {
-                i18n::f(
-                    format!("孵化 holder 失败: {e}"),
-                    format!("failed to incubate holder: {e}"),
-                )
-            })?;
+            .map_err(|e| t!("err.incubate_holder", e = e).to_string())?;
         // 等 holder 就绪（状态文件出现）；旧残留文件已由 kill_session 清掉，再兜底一次
         let status_path = session_status_path(&spec.name)?;
         let _ = std::fs::remove_file(&status_path);
@@ -80,11 +74,7 @@ impl Engine for PtyEngine {
             std::thread::sleep(Duration::from_millis(25));
         }
         self.kill_session(&spec.name).ok();
-        Err(i18n::s(
-            "holder 启动超时（详见 daemon.log）",
-            "holder start timeout (see daemon.log)",
-        )
-        .into())
+        Err(t!("err.holder_timeout").to_string())
     }
 
     fn start_obs(&self, _spec: &SessionSpec, _exe: &Path) -> Result<(), String> {
@@ -185,10 +175,7 @@ impl Engine for PtyEngine {
         if err.raw_os_error() == Some(libc::ESRCH) {
             Ok(())
         } else {
-            Err(i18n::f(
-                format!("kill 进程组 -{pgid}（信号 {sig}）: {err}"),
-                format!("failed to kill process group -{pgid} (signal {sig}): {err}"),
-            ))
+            Err(t!("err.kill_group", pgid = pgid, sig = sig, err = err).to_string())
         }
     }
 

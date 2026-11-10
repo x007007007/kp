@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::EngineKind;
 use crate::glob::glob_match;
-use crate::i18n;
 use crate::paths;
 use crate::protocol::Policy;
 
@@ -170,10 +169,7 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
 
     if let Some(e) = &cfg_engine {
         if EngineKind::parse(e).is_none() {
-            return Err(i18n::f(
-                format!("run.engine 非法: {e:?}（native | tmux）"),
-                format!("invalid run.engine: {e:?} (native | tmux)"),
-            ));
+            return Err(t!("err.cfg_engine", e = e).to_string());
         }
     }
     validate(&services, &run)?;
@@ -190,74 +186,32 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
 }
 
 fn parse_file(p: &Path) -> Result<FileCfg, String> {
-    let text = std::fs::read_to_string(p).map_err(|e| {
-        i18n::f(
-            format!("读取 {}: {e}", p.display()),
-            format!("failed to read {}: {e}", p.display()),
-        )
-    })?;
-    toml::from_str(&text).map_err(|e| {
-        i18n::f(
-            format!("配置错误 {}: {e}", p.display()),
-            format!("config error in {}: {e}", p.display()),
-        )
-    })
+    let text = std::fs::read_to_string(p)
+        .map_err(|e| t!("err.cfg_read", p = p.display(), e = e).to_string())?;
+    toml::from_str(&text).map_err(|e| t!("err.cfg_parse", p = p.display(), e = e).to_string())
 }
 
 fn validate(services: &[ServiceCfg], run: &Run) -> Result<(), String> {
     let _ = run;
     if !(1..=600).contains(&run.term_timeout) {
-        return Err(i18n::f(
-            format!("run.term_timeout 越界: {}（1..=600）", run.term_timeout),
-            format!(
-                "run.term_timeout out of range: {} (1..=600)",
-                run.term_timeout
-            ),
-        ));
+        return Err(t!("err.cfg_term_timeout", v = run.term_timeout).to_string());
     }
     if !(1..=2048).contains(&run.log_max_mb) {
-        return Err(i18n::f(
-            format!("run.log_max_mb 越界: {}（1..=2048）", run.log_max_mb),
-            format!("run.log_max_mb out of range: {} (1..=2048)", run.log_max_mb),
-        ));
+        return Err(t!("err.cfg_log_max", v = run.log_max_mb).to_string());
     }
     if !(10..=10000).contains(&run.history_keep) {
-        return Err(i18n::f(
-            format!("run.history_keep 越界: {}（10..=10000）", run.history_keep),
-            format!(
-                "run.history_keep out of range: {} (10..=10000)",
-                run.history_keep
-            ),
-        ));
+        return Err(t!("err.cfg_history_keep", v = run.history_keep).to_string());
     }
     let mut seen = HashSet::new();
     for s in services {
         if !valid_name(&s.name) {
-            return Err(i18n::f(
-                format!(
-                    "service.name 非法: {:?}（需匹配 ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$）",
-                    s.name
-                ),
-                format!(
-                    "invalid service.name: {:?} (must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$)",
-                    s.name
-                ),
-            ));
+            return Err(t!("err.cfg_service_name", name = s.name).to_string());
         }
         if s.match_.is_empty() {
-            return Err(i18n::f(
-                format!("service {:?} 的 match 不能为空", s.name),
-                format!("service {:?} has an empty match", s.name),
-            ));
+            return Err(t!("err.cfg_service_match", name = s.name).to_string());
         }
         if !seen.insert(s.name.clone()) {
-            return Err(i18n::f(
-                format!("service.name 重复: {}（合并链上必须唯一）", s.name),
-                format!(
-                    "duplicate service.name: {} (must be unique across the merge chain)",
-                    s.name
-                ),
-            ));
+            return Err(t!("err.cfg_service_dup", name = s.name).to_string());
         }
     }
     Ok(())
