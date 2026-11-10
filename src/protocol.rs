@@ -168,7 +168,9 @@ pub enum Request {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    Hello { version: u32 },
+    Hello {
+        version: u32,
+    },
     Pong,
     Spawn(SpawnOutcome),
     Attach(SpawnOutcome),
@@ -185,7 +187,10 @@ pub enum Response {
         started_at_ms: u64,
     },
     Ok,
-    Err { code: i32, message: String },
+    Err {
+        code: i32,
+        message: String,
+    },
 }
 
 pub fn send_frame<T: Serialize>(stream: &mut UnixStream, msg: &T) -> io::Result<()> {

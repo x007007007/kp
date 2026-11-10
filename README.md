@@ -84,6 +84,17 @@ $ kpm doctor                # 排障：二进制版本、daemon 身份、会话�
 - **daemon.log**（`~/.local/state/kp/daemon.log`，路径随 `$XDG_STATE_HOME`）：daemon 与 holder 的全生命周期事件时间线——create/finalize/kill/cleanup/reconcile、退出码上报成功与否、attach 授权序列。报 issue 时请附上 `kpm doctor` 的输出。
 - **`KP_ATTACH_TRACE=1`**：native 引擎 attach 中继的逐帧跟踪（调试键盘转发/退出码时用）。
 
+### 语言 / Language
+
+界面文案按 POSIX 惯例自动选择：`KP_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG`，`zh_*` 显示中文、其余（含未设置/C）显示英文：
+
+```console
+$ KP_LANG=en kp echo hi     # 强制英文
+$ KP_LANG=zh kpm doctor     # 强制中文
+```
+
+UI 文案（banner/错误/提示）已双语；`--help` 帮助文本与 daemon.log 日志暂为中文/技术性英文，后续版本跟进。
+
 ### 重复策略（`-p`）
 
 | 策略 | 行为 | 典型场景 |

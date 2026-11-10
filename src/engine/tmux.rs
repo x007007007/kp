@@ -1,4 +1,5 @@
 use super::{Engine, EngineSessionInfo};
+use crate::i18n;
 use crate::protocol::SessionSpec;
 use crate::util::{now_ms, sh_quote};
 use std::path::Path;
@@ -16,10 +17,12 @@ const LIST_FMT: &str = "#{session_name}|#{session_created}|#{session_attached}";
 fn call(args: &[&str]) -> Result<String, String> {
     let mut full: Vec<&str> = vec!["-L", SOCKET, "-f", "/dev/null"];
     full.extend(args);
-    let out = Command::new("tmux")
-        .args(&full)
-        .output()
-        .map_err(|e| format!("执行 tmux 失败（是否已安装？macOS: brew install tmux）: {e}"))?;
+    let out = Command::new("tmux").args(&full).output().map_err(|e| {
+        i18n::f(
+            format!("执行 tmux 失败（是否已安装？macOS: brew install tmux）: {e}"),
+            format!("failed to run tmux (is it installed? macOS: brew install tmux): {e}"),
+        )
+    })?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     } else {
@@ -157,7 +160,10 @@ impl Engine for TmuxEngine {
         if err.raw_os_error() == Some(libc::ESRCH) {
             Ok(()) // 组已不存在
         } else {
-            Err(format!("kill 进程组 -{pgid}（信号 {sig}）: {err}"))
+            Err(i18n::f(
+                format!("kill 进程组 -{pgid}（信号 {sig}）: {err}"),
+                format!("failed to kill process group -{pgid} (signal {sig}): {err}"),
+            ))
         }
     }
 

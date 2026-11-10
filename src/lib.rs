@@ -10,6 +10,7 @@ pub mod engine;
 pub mod glob;
 pub mod history;
 pub mod holder;
+pub mod i18n;
 pub mod identity;
 pub mod paths;
 pub mod protocol;

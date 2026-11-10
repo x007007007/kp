@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::engine::EngineKind;
 use crate::glob::glob_match;
+use crate::i18n;
 use crate::paths;
 use crate::protocol::Policy;
 
@@ -169,7 +170,10 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
 
     if let Some(e) = &cfg_engine {
         if EngineKind::parse(e).is_none() {
-            return Err(format!("run.engine 非法: {e:?}（native | tmux）"));
+            return Err(i18n::f(
+                format!("run.engine 非法: {e:?}（native | tmux）"),
+                format!("invalid run.engine: {e:?} (native | tmux)"),
+            ));
         }
     }
     validate(&services, &run)?;
@@ -186,43 +190,74 @@ pub fn load(cwd: &Path, global_override: Option<&Path>) -> Result<Effective, Str
 }
 
 fn parse_file(p: &Path) -> Result<FileCfg, String> {
-    let text = std::fs::read_to_string(p).map_err(|e| format!("读取 {}: {e}", p.display()))?;
-    toml::from_str(&text).map_err(|e| format!("配置错误 {}: {e}", p.display()))
+    let text = std::fs::read_to_string(p).map_err(|e| {
+        i18n::f(
+            format!("读取 {}: {e}", p.display()),
+            format!("failed to read {}: {e}", p.display()),
+        )
+    })?;
+    toml::from_str(&text).map_err(|e| {
+        i18n::f(
+            format!("配置错误 {}: {e}", p.display()),
+            format!("config error in {}: {e}", p.display()),
+        )
+    })
 }
 
 fn validate(services: &[ServiceCfg], run: &Run) -> Result<(), String> {
     let _ = run;
     if !(1..=600).contains(&run.term_timeout) {
-        return Err(format!(
-            "run.term_timeout 越界: {}（1..=600）",
-            run.term_timeout
+        return Err(i18n::f(
+            format!("run.term_timeout 越界: {}（1..=600）", run.term_timeout),
+            format!(
+                "run.term_timeout out of range: {} (1..=600)",
+                run.term_timeout
+            ),
         ));
     }
     if !(1..=2048).contains(&run.log_max_mb) {
-        return Err(format!(
-            "run.log_max_mb 越界: {}（1..=2048）",
-            run.log_max_mb
+        return Err(i18n::f(
+            format!("run.log_max_mb 越界: {}（1..=2048）", run.log_max_mb),
+            format!("run.log_max_mb out of range: {} (1..=2048)", run.log_max_mb),
         ));
     }
     if !(10..=10000).contains(&run.history_keep) {
-        return Err(format!(
-            "run.history_keep 越界: {}（10..=10000）",
-            run.history_keep
+        return Err(i18n::f(
+            format!("run.history_keep 越界: {}（10..=10000）", run.history_keep),
+            format!(
+                "run.history_keep out of range: {} (10..=10000)",
+                run.history_keep
+            ),
         ));
     }
     let mut seen = HashSet::new();
     for s in services {
         if !valid_name(&s.name) {
-            return Err(format!(
-                "service.name 非法: {:?}（需匹配 ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$）",
-                s.name
+            return Err(i18n::f(
+                format!(
+                    "service.name 非法: {:?}（需匹配 ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$）",
+                    s.name
+                ),
+                format!(
+                    "invalid service.name: {:?} (must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$)",
+                    s.name
+                ),
             ));
         }
         if s.match_.is_empty() {
-            return Err(format!("service {:?} 的 match 不能为空", s.name));
+            return Err(i18n::f(
+                format!("service {:?} 的 match 不能为空", s.name),
+                format!("service {:?} has an empty match", s.name),
+            ));
         }
         if !seen.insert(s.name.clone()) {
-            return Err(format!("service.name 重复: {}（合并链上必须唯一）", s.name));
+            return Err(i18n::f(
+                format!("service.name 重复: {}（合并链上必须唯一）", s.name),
+                format!(
+                    "duplicate service.name: {} (must be unique across the merge chain)",
+                    s.name
+                ),
+            ));
         }
     }
     Ok(())
@@ -377,7 +412,8 @@ cwd = "apps/api*"
         let f = d.join("c.toml");
         fs::write(&f, "[run]\nwhatever = 1\n").unwrap();
         let err = load(&d, Some(&f)).unwrap_err();
-        assert!(err.contains("配置错误"), "got: {err}");
+        // 语言中立断言（i18n 后错误文案随环境变化；c.toml 路径两种语言都含）
+        assert!(err.contains("c.toml"), "got: {err}");
     }
 
     #[test]
@@ -441,7 +477,11 @@ mod engine_tests {
         let f = d.join("c.toml");
         fs::write(&f, "[run]\nengine = \"screen\"\n").unwrap();
         let err = load(&d, Some(&f)).unwrap_err();
-        assert!(err.contains("run.engine 非法"), "got: {err}");
+        // 语言中立断言：run.engine 与取值表两种语言都含
+        assert!(
+            err.contains("run.engine") && err.contains("native"),
+            "got: {err}"
+        );
     }
 
     #[test]

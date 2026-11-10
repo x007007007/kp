@@ -7,6 +7,7 @@ KP="$ROOT/target/debug/kp"
 KPM="$ROOT/target/debug/kpm"
 D="$ROOT/.dev"
 export XDG_STATE_HOME="$D/state" XDG_RUNTIME_DIR="$D/runtime" XDG_CONFIG_HOME="$D/config"
+export KP_LANG=zh   # 断言依赖中文 UI 文案（如"会话退出"摘要），显式锁定语言
 
 fail() { echo "✗ $*"; cleanup; exit 1; }
 ok() { echo "✓ $*"; }

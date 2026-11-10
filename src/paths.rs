@@ -3,9 +3,15 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
 pub fn home() -> io::Result<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "环境变量 HOME 未设置"))
+    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "{}HOME",
+                crate::i18n::s("环境变量未设置: ", "environment variable not set: ")
+            ),
+        )
+    })
 }
 
 fn xdg_dir(var: &str, fallback: &str) -> io::Result<PathBuf> {

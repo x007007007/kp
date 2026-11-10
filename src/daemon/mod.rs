@@ -2,6 +2,7 @@ mod reconcile;
 
 use crate::engine::{Engine, EngineKind};
 use crate::history::{self, HistoryEntry};
+use crate::i18n;
 use crate::paths;
 use crate::protocol::{
     recv_frame, send_frame, ExitInfo, Policy, Request, Response, SessionInfo, SessionSpec,
@@ -90,9 +91,19 @@ fn persist_policies(ctx: &Ctx) {
 /// holder 的 stderr 也重定向到同一文件，全程一条时间线。事件级低频，不分级别。
 pub fn dlog(msg: &str) {
     let Ok(p) = paths::daemon_log() else { return };
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         use std::io::Write;
-        let _ = writeln!(f, "kp daemon[{}]: {} @{}", std::process::id(), msg, now_ms());
+        let _ = writeln!(
+            f,
+            "kp daemon[{}]: {} @{}",
+            std::process::id(),
+            msg,
+            now_ms()
+        );
     }
 }
 
@@ -102,7 +113,7 @@ pub fn serve() -> Result<(), String> {
     let sock_path = rt.join("daemon.sock");
     // 单实例锁：已有活 daemon 则静默退出（孵化方只会孵化一个）
     if sock_path.exists() && UnixStream::connect(&sock_path).is_ok() {
-        return Err("已有 kp daemon 在运行".into());
+        return Err(i18n::s("已有 kp daemon 在运行", "a kp daemon is already running").into());
     }
     let _ = std::fs::remove_file(&sock_path);
     paths::ensure_dir(&paths::logs_dir().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -124,12 +135,23 @@ pub fn serve() -> Result<(), String> {
 
     // unix socket 路径上限（macOS SUN_LEN=104）：提前给出可行动的报错
     if sock_path.to_string_lossy().len() > 100 {
-        return Err(format!(
-            "socket 路径过长（{}，上限 ~104）：请设置更短的 XDG_RUNTIME_DIR",
-            sock_path.display()
+        return Err(i18n::f(
+            format!(
+                "socket 路径过长（{}，上限 ~104）：请设置更短的 XDG_RUNTIME_DIR",
+                sock_path.display()
+            ),
+            format!(
+                "socket path too long ({}, limit ~104): set a shorter XDG_RUNTIME_DIR",
+                sock_path.display()
+            ),
         ));
     }
-    let listener = UnixListener::bind(&sock_path).map_err(|e| format!("绑定 socket 失败: {e}"))?;
+    let listener = UnixListener::bind(&sock_path).map_err(|e| {
+        i18n::f(
+            format!("绑定 socket 失败: {e}"),
+            format!("failed to bind socket: {e}"),
+        )
+    })?;
     {
         let c = ctx.clone();
         std::thread::spawn(move || janitor_loop(c));
@@ -169,8 +191,9 @@ fn handle_conn(ctx: Arc<Ctx>, mut stream: UnixStream) {
                 &mut stream,
                 &Response::Err {
                     code: 4,
-                    message: format!(
-                        "协议版本不匹配：client v{version} / daemon v{PROTO_VERSION}，请升级 kp"
+                    message: i18n::f(
+                        format!("协议版本不匹配：client v{version} / daemon v{PROTO_VERSION}，请升级 kp"),
+                        format!("protocol version mismatch: client v{version} / daemon v{PROTO_VERSION}, please upgrade kp"),
                     ),
                 },
             );
@@ -181,7 +204,7 @@ fn handle_conn(ctx: Arc<Ctx>, mut stream: UnixStream) {
                 &mut stream,
                 &Response::Err {
                     code: 1,
-                    message: "首帧必须是 Hello".into(),
+                    message: i18n::s("首帧必须是 Hello", "first frame must be Hello").into(),
                 },
             );
             return;
@@ -204,7 +227,7 @@ fn dispatch(ctx: &Ctx, req: Request) -> Response {
         Request::Ping => Response::Pong,
         Request::Hello { .. } => Response::Err {
             code: 1,
-            message: "重复握手".into(),
+            message: i18n::s("重复握手", "duplicate handshake").into(),
         },
         Request::Spawn { spec } => spawn(ctx, spec),
         Request::AttachExisting { name } => attach_existing(ctx, &name),
@@ -282,7 +305,12 @@ fn write_spec_file(spec: &SessionSpec) -> Result<(), String> {
         .truncate(true)
         .mode(0o600) // env 快照可能含密钥（架构 §9）
         .open(&spec.spec_path)
-        .map_err(|e| format!("写 spec 失败: {e}"))?;
+        .map_err(|e| {
+            i18n::f(
+                format!("写 spec 失败: {e}"),
+                format!("failed to write spec: {e}"),
+            )
+        })?;
     f.write_all(&json).map_err(|e| e.to_string())
 }
 
@@ -304,7 +332,12 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         .create(true)
         .append(true)
         .open(&spec.log_path)
-        .map_err(|e| format!("创建日志文件失败: {e}"))?;
+        .map_err(|e| {
+            i18n::f(
+                format!("创建日志文件失败: {e}"),
+                format!("failed to create log file: {e}"),
+            )
+        })?;
 
     let eng = ctx.eng(spec.engine);
     dlog(&format!("create {} engine={:?}", spec.name, spec.engine));
@@ -341,7 +374,10 @@ fn create_session(ctx: &Ctx, spec: SessionSpec) -> Result<SessionInfo, String> {
         let _ = eng.kill_session(&spec.name);
         ctx.reg.remove(&name);
         ctx.reg.persist();
-        return Err(format!("设置观测项失败: {e}"));
+        return Err(i18n::f(
+            format!("设置观测项失败: {e}"),
+            format!("failed to set up observability: {e}"),
+        ));
     }
     // 观测项就位 → 放行 _spawn（两阶段启动）
     let go = spec.spec_path.with_extension("json.go");
@@ -421,7 +457,7 @@ fn spawn_new_instance(ctx: &Ctx, mut spec: SessionSpec) -> Response {
     }
     Response::Err {
         code: 1,
-        message: "并行实例过多（>64）".into(),
+        message: i18n::s("并行实例过多（>64）", "too many parallel instances (>64)").into(),
     }
 }
 
@@ -429,17 +465,27 @@ fn attach_existing(ctx: &Ctx, name: &str) -> Response {
     let Some(entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
-            message: format!("没有会话 {name}（kpm ls 查看）"),
+            message: i18n::f(
+                format!("没有会话 {name}（kpm ls 查看）"),
+                format!("no such session {name} (see kpm ls)"),
+            ),
         };
     };
     let st = entry.st.lock().unwrap().clone();
     if st.status != Status::Running {
         return Response::Err {
             code: 1,
-            message: format!(
-                "会话 {name} 已退出（退出码 {}，原因 {}）；重启: kpm restart {name}",
-                st.exit_code.map(|c| c.to_string()).unwrap_or("?".into()),
-                st.reason
+            message: i18n::f(
+                format!(
+                    "会话 {name} 已退出（退出码 {}，原因 {}）；重启: kpm restart {name}",
+                    st.exit_code.map(|c| c.to_string()).unwrap_or("?".into()),
+                    st.reason
+                ),
+                format!(
+                    "session {name} has exited (code {}, reason {}); restart with kpm restart {name}",
+                    st.exit_code.map(|c| c.to_string()).unwrap_or("?".into()),
+                    st.reason
+                ),
             ),
         };
     }
@@ -462,7 +508,10 @@ fn restart_by_name(
     let Some(entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
-            message: format!("没有会话 {name}"),
+            message: i18n::f(
+                format!("没有会话 {name}"),
+                format!("no such session {name}"),
+            ),
         };
     };
     let st = entry.st.lock().unwrap().clone();
@@ -519,7 +568,10 @@ fn stop_one(ctx: &Ctx, name: &str) -> Response {
     let Some(entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
-            message: format!("没有会话 {name}"),
+            message: i18n::f(
+                format!("没有会话 {name}"),
+                format!("no such session {name}"),
+            ),
         };
     };
     let st = entry.st.lock().unwrap().clone();
@@ -622,7 +674,9 @@ fn wait_dead(ctx: &Ctx, name: &str, timeout_s: u64) -> bool {
 fn finalize(ctx: &Ctx, name: &str, code: Option<i32>, reason: &str) {
     let Some(entry) = ctx.reg.get(name) else {
         // 条目不存在：幽灵 running 的症状镜像（ReportDone 早于注册）。正常不应发生。
-        dlog(&format!("finalize {name} code={code:?} reason={reason} —— 条目不存在，丢弃"));
+        dlog(&format!(
+            "finalize {name} code={code:?} reason={reason} —— 条目不存在，丢弃"
+        ));
         return;
     };
     {
@@ -712,7 +766,10 @@ fn wait_exit(ctx: &Ctx, name: &str, timeout_ms: u64) -> Response {
     let Some(mut entry) = ctx.reg.get(name) else {
         return Response::Err {
             code: 1,
-            message: format!("没有会话 {name}"),
+            message: i18n::f(
+                format!("没有会话 {name}"),
+                format!("no such session {name}"),
+            ),
         };
     };
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);

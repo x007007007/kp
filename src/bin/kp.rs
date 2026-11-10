@@ -3,6 +3,7 @@
 //! 会话管理命令在 `kpm`；`_spawn`/`_holder`/`_attach`/`_report` 为内部命令。
 
 use clap::Parser;
+use kp_cli::i18n;
 use kp_cli::protocol::Policy;
 use kp_cli::{attach_cmd, client, daemon, holder, spawn_cmd};
 use std::ffi::OsString;
@@ -57,14 +58,14 @@ fn main() {
         Some((a, rest)) if a == "_spawn" => match parse_flag(rest, "--spec") {
             Some(p) => spawn_cmd::run(&PathBuf::from(p)),
             None => {
-                eprintln!("kp _spawn: 缺少 --spec");
+                eprintln!("kp _spawn: {}", i18n::s("缺少 --spec", "missing --spec"));
                 2
             }
         },
         Some((a, rest)) if a == "_holder" => match parse_flag(rest, "--spec") {
             Some(p) => holder::run(&PathBuf::from(p)),
             None => {
-                eprintln!("kp _holder: 缺少 --spec");
+                eprintln!("kp _holder: {}", i18n::s("缺少 --spec", "missing --spec"));
                 2
             }
         },
@@ -74,7 +75,10 @@ fn main() {
             match sock {
                 Some(s) => attach_cmd::run(&s, readonly),
                 None => {
-                    eprintln!("kp _attach: 缺少 --socket");
+                    eprintln!(
+                        "kp _attach: {}",
+                        i18n::s("缺少 --socket", "missing --socket")
+                    );
                     2
                 }
             }
@@ -82,7 +86,13 @@ fn main() {
         Some((a, rest)) if a == "_report" => match (rest.first(), rest.get(1)) {
             (Some(n), Some(c)) => client::cmd_report(n, c),
             _ => {
-                eprintln!("kp _report: 用法 kp _report <name> <code>");
+                eprintln!(
+                    "kp _report: {}",
+                    i18n::s(
+                        "用法 kp _report <name> <code>",
+                        "usage: kp _report <name> <code>"
+                    )
+                );
                 2
             }
         },

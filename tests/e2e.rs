@@ -52,7 +52,9 @@ impl Env {
     fn apply(&self, cmd: &mut Command) {
         cmd.env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
-            .env("XDG_CONFIG_HOME", self.root.join("config"));
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            // 断言依赖中文 UI 文案（会话退出摘要等），显式锁定语言
+            .env("KP_LANG", "zh");
     }
 
     fn sock(&self) -> PathBuf {
