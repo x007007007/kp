@@ -107,7 +107,8 @@ python3 - "$D" "$NAME3" <<'PYEOF2' || fail "输入转发失败"
 import socket, json, time, select, sys
 d, name = sys.argv[1], sys.argv[2]
 s = socket.socket(socket.AF_UNIX)
-s.connect(f"{d}/runtime/kp/sessions/{name}.sock")
+sockname = "s-" + __import__("hashlib").sha256(name.encode()).hexdigest()[:12] + ".sock"
+s.connect(f"{d}/runtime/kp/sessions/{sockname}")
 hello = b'A' + json.dumps({"readonly": False, "cols": 80, "rows": 24}).encode()
 s.sendall(len(hello).to_bytes(4, "big") + hello)
 
@@ -190,7 +191,8 @@ assert p.poll() == 0, f"detach 后 _attach 退出码 {p.poll()}（应 0）"
 
 # 9c. detach 断连即释放写锁：新写客户端应获得 write 授权
 s = socket.socket(socket.AF_UNIX)
-s.connect(f"{d}/runtime/kp/sessions/{name}.sock")
+sockname = "s-" + __import__("hashlib").sha256(name.encode()).hexdigest()[:12] + ".sock"
+s.connect(f"{d}/runtime/kp/sessions/{sockname}")
 hello = b'A' + json.dumps({"readonly": False, "cols": 80, "rows": 24}).encode()
 s.sendall(len(hello).to_bytes(4, "big") + hello)
 buf = b""

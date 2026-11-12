@@ -31,18 +31,70 @@ pub fn sessions_runtime_dir() -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+/// 会话 socket 文件名：名字的 sha256 前 12 hex，`s-<hash>.sock`。
+/// 不用会话全名——长项目名（如 pioneeringpark-official-frontend）的会话名
+/// 会把 socket 路径顶过 macOS SUN_LEN 上限（~104），bind 失败 → holder_timeout。
+/// 状态文件仍用全名（普通文件无此限制），socket 与状态文件名解耦。
+pub fn session_sock_file(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(name.as_bytes())
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("s-{hex}.sock")
+}
+
 pub fn session_status_path(name: &str) -> Result<PathBuf, String> {
     Ok(sessions_runtime_dir()?.join(format!("{name}.json")))
 }
 
 pub fn session_sock_path(name: &str) -> Result<PathBuf, String> {
-    Ok(sessions_runtime_dir()?.join(format!("{name}.sock")))
+    Ok(sessions_runtime_dir()?.join(session_sock_file(name)))
+}
+
+#[cfg(test)]
+mod sock_tests {
+    use super::*;
+
+    #[test]
+    fn sock_file_is_short_stable_and_name_dependent() {
+        let a = session_sock_file("kp-pioneeringpark-official-frontend-abcdef1234567890");
+        let b = session_sock_file("kp-pioneeringpark-official-frontend-abcdef1234567890");
+        let c = session_sock_file("kp-short-x-abcdef1234567890");
+        assert_eq!(a, b, "同名必须同路径");
+        assert_ne!(a, c, "异名必须异路径");
+        assert!(a.len() <= 20, "socket 文件名应短（{}）", a.len());
+        assert!(a.starts_with("s-") && a.ends_with(".sock"));
+    }
+
+    #[test]
+    fn long_project_socket_path_stays_under_limit() {
+        // 复现用户场景：长项目名的会话，socket 全路径必须低于 macOS SUN_LEN 上限
+        let name = "kp-pioneeringpark-official-frontend-abcdef1234567890";
+        let dir = sessions_runtime_dir().unwrap();
+        let path = dir.join(session_sock_file(name));
+        assert!(
+            path.to_string_lossy().len() < 100,
+            "socket 路径过长: {}",
+            path.display()
+        );
+    }
 }
 
 pub struct PtyEngine;
 
 impl Engine for PtyEngine {
     fn create(&self, spec: &SessionSpec, _exe: &Path) -> Result<(), String> {
+        // socket 路径护栏（macOS SUN_LEN=104）：给出可行动的报错而非 holder_timeout
+        let sock = session_sock_path(&spec.name)?;
+        if sock.to_string_lossy().len() > 100 {
+            return Err(format!(
+                "{}: {}",
+                t!("err.sock_too_long", path = sock.display()),
+                t!("err.shorten_xdg_runtime_dir")
+            ));
+        }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let daemon_log = crate::paths::daemon_log().map_err(|e| e.to_string())?;
         if let Some(p) = daemon_log.parent() {

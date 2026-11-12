@@ -457,3 +457,6 @@ _version: 2
 "msg.log_replay":
   en: "kp: recent output (tail of session log):"
   zh: "kp: 最近输出（会话日志尾部）："
+"err.shorten_xdg_runtime_dir":
+  en: "set a shorter XDG_RUNTIME_DIR"
+  zh: "请设置更短的 XDG_RUNTIME_DIR"
