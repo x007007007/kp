@@ -427,9 +427,14 @@ holder: setsid → openpty → fork（子进程 setsid+TIOCSCTTY+exec 命令）
 
 客户端 attach = `kp _attach --socket <path> [--readonly]`：raw 模式中继（stdin→F_INPUT、
 Data→stdout、SIGWINCH→Resize、Exited→以子进程退出码退出）。前缀键与 tmux 对齐：
-Ctrl-b d = 脱离（仅退出 attach 客户端，会话继续跑；只读接入仅放行 Ctrl-C（FR5）与 Ctrl-b d 脱离，其余键盘输入一律不转发）、Ctrl-b Ctrl-b = 发送字面 Ctrl-b、Ctrl-b + 其他键 = 前缀与该键原样透传
-（不吞键；前缀模式跨 read 保持）。客户端对 detach 快速判定（_attach 0 退出 + 会话
-running 同纪元 → 立即反馈），不经 WaitExit 长轮询。
+Ctrl-b d = 脱离（仅退出 attach 客户端，会话继续跑）、Ctrl-b Ctrl-b = 发送字面 Ctrl-b、
+Ctrl-b + 其他键 = 前缀与该键原样透传（不吞键；前缀模式跨 read 保持）。
+只读接入的键盘输入不转发，两个例外：**Ctrl-C**（FR5——任一窗口可结束会话，
+客户端与 holder 双侧放行 0x03，其余字节照旧丢弃）与 **Ctrl-b d** 脱离。
+客户端对 detach 快速判定（_attach 0 退出 + 会话 running 同纪元 → 立即反馈），
+不经 WaitExit 长轮询。快速退出（<2s）时客户端回放会话日志尾部 15 行——
+attach 与退出的竞态常使瞬时失败输出（如 dev server 起动即报错）来不及送达
+终端，回放让失败原因直接显示在交互里，不必翻 kpm logs。
 
 相对 tmux 引擎的简化：`_spawn` 两阶段启动、`pane_dead_status`≥3.2、pane-died hook、
 `@kp_*` 元数据、remain-on-exit **全部消失**——holder 从头掌控 PTY 生命周期。
