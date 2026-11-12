@@ -1,6 +1,6 @@
 [package]
 name = "kp-cli"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "kp — keep processes running: transparent command wrapping with session dedup, re-attach, and a built-in PTY engine (tmux optional)"
 license = "MIT"
