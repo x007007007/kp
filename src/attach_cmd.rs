@@ -127,8 +127,15 @@ pub fn run(sock: &std::path::Path, readonly: bool) -> i32 {
                 stdin_open = false; // stdin 关闭（如 </dev/null）：停止轮询，不空转
             } else if r > 0 {
                 let (bytes, detach) = prefix_filter(&mut prefix, &buf[..r as usize]);
-                // 只读接入不转发任何键盘输入，但 Ctrl-b d 脱离同样生效（否则只读窗口只能关窗）
-                if !bytes.is_empty() && !readonly {
+                if readonly {
+                    // 只读接入：唯一放行 Ctrl-C（FR5——任一窗口可结束会话），
+                    // 其余键盘输入一律不转发（多读单写：观察者不得干预会话）；
+                    // Ctrl-b d 脱离同样生效（否则只读窗口只能关窗）
+                    let ctrl_c: Vec<u8> = bytes.iter().copied().filter(|&b| b == 0x03).collect();
+                    if !ctrl_c.is_empty() {
+                        let _ = stream.write_all(&frame(F_INPUT, &ctrl_c));
+                    }
+                } else if !bytes.is_empty() {
                     let _ = stream.write_all(&frame(F_INPUT, &bytes));
                 }
                 if detach {

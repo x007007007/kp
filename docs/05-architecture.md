@@ -427,8 +427,7 @@ holder: setsid → openpty → fork（子进程 setsid+TIOCSCTTY+exec 命令）
 
 客户端 attach = `kp _attach --socket <path> [--readonly]`：raw 模式中继（stdin→F_INPUT、
 Data→stdout、SIGWINCH→Resize、Exited→以子进程退出码退出）。前缀键与 tmux 对齐：
-Ctrl-b d = 脱离（仅退出 attach 客户端，会话继续跑；只读接入仅响应脱离，其余键盘输入
-一律不转发）、Ctrl-b Ctrl-b = 发送字面 Ctrl-b、Ctrl-b + 其他键 = 前缀与该键原样透传
+Ctrl-b d = 脱离（仅退出 attach 客户端，会话继续跑；只读接入仅放行 Ctrl-C（FR5）与 Ctrl-b d 脱离，其余键盘输入一律不转发）、Ctrl-b Ctrl-b = 发送字面 Ctrl-b、Ctrl-b + 其他键 = 前缀与该键原样透传
 （不吞键；前缀模式跨 read 保持）。客户端对 detach 快速判定（_attach 0 退出 + 会话
 running 同纪元 → 立即反馈），不经 WaitExit 长轮询。
 

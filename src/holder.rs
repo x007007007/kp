@@ -358,22 +358,35 @@ pub fn run(spec_path: &Path) -> i32 {
                             c.inbuf.drain(..4); // 剥长度头
                             let payload: Vec<u8> = c.inbuf.drain(..len).collect();
                             match payload[0] {
-                                F_INPUT if c.writer && pty_open && exited_code.is_none() => {
-                                    if std::env::var_os("KP_HOLDER_TRACE").is_some() {
-                                        eprintln!(
-                                            "kp _holder[{}]: F_INPUT {} 字节",
-                                            spec.name,
-                                            payload.len() - 1
-                                        );
-                                    }
-                                    pty_out.extend_from_slice(&payload[1..]);
-                                    flush_master(master_fd, &mut pty_out);
-                                    if std::env::var_os("KP_HOLDER_TRACE").is_some() {
-                                        eprintln!(
-                                            "kp _holder[{}]: master 写后积压 {}",
-                                            spec.name,
-                                            pty_out.len()
-                                        );
+                                // 写客户端：全量输入；读客户端：仅放行 Ctrl-C（FR5——
+                                // 任一窗口可结束会话），其余字节丢弃（多读单写）
+                                F_INPUT
+                                    if (c.writer || payload[1..].contains(&0x03))
+                                        && pty_open
+                                        && exited_code.is_none() =>
+                                {
+                                    let input: Vec<u8> = if c.writer {
+                                        payload[1..].to_vec()
+                                    } else {
+                                        payload[1..]
+                                            .iter()
+                                            .copied()
+                                            .filter(|&b| b == 0x03)
+                                            .collect()
+                                    };
+                                    if input.is_empty() {
+                                        // 读客户端的非 Ctrl-C 字节：静默丢弃
+                                    } else {
+                                        if std::env::var_os("KP_HOLDER_TRACE").is_some() {
+                                            eprintln!(
+                                                "kp _holder[{}]: F_INPUT {} 字节（writer={}）",
+                                                spec.name,
+                                                input.len(),
+                                                c.writer
+                                            );
+                                        }
+                                        pty_out.extend_from_slice(&input);
+                                        flush_master(master_fd, &mut pty_out);
                                     }
                                 }
                                 F_RESIZE => {

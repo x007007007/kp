@@ -27,7 +27,7 @@ $ kp make run server 127.0.0.1
  ...
 ```
 
-Close any window and the session keeps running; Ctrl-C in any window ends the session, all windows exit in sync and echo the exit code. Want to leave the screen without stopping the service? **`Ctrl-b d` detaches** (identical for native and tmux engines; read-only windows can detach too; `Ctrl-b Ctrl-b` sends a literal Ctrl-b to the program; any other prefix combo passes both keys through untouched).
+Close any window and the session keeps running; Ctrl-C in any window ends the session, all windows exit in sync and echo the exit code — **Ctrl-C passes through even in read-only windows** (no other keyboard input is forwarded). Want to leave the screen without stopping the service? **`Ctrl-b d` detaches** (identical for native and tmux engines; `Ctrl-b Ctrl-b` sends a literal Ctrl-b to the program; any other prefix combo passes both keys through untouched).
 
 ## Install
 
