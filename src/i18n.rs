@@ -129,13 +129,54 @@ mod tests {
         assert_eq!(detect_from(Some("".into()), None, None, None), Lang::En);
     }
 
+    /// 全量覆盖：扫描源码里所有 t!("key") 引用，逐键验证 zh/en 都有译文。
+    /// 防"运行时打印出键名"——译文缺失在编译期测试就拦下，而非用户终端。
     #[test]
-    fn translations_cover_both_locales() {
-        for key in ["err.no_command", "msg.detached", "status.name"] {
+    fn translations_cover_every_referenced_key() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let mut keys = std::collections::BTreeSet::new();
+        let mut stack = vec![std::path::PathBuf::from(manifest).join("src")];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let p = entry.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().map(|e| e == "rs").unwrap_or(false) {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    let mut i = 0;
+                    while let Some(pos) = text[i..].find("t!(\"") {
+                        let at = i + pos;
+                        // 跳过 format!( 等尾部恰好含 t!( 字样的非调用（词边界检查）
+                        if at > 0 {
+                            let prev = text.as_bytes()[at - 1];
+                            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                                i = at + 4;
+                                continue;
+                            }
+                        }
+                        // 行内注释里的 t!( 字样不算引用（含本测试自己的注释）
+                        let line_start = text[..at].rfind('\n').map(|x| x + 1).unwrap_or(0);
+                        let before = &text[line_start..at];
+                        if let Some(c) = before.find("//") {
+                            if before[..c].matches('"').count() % 2 == 0 {
+                                i = at + 4;
+                                continue;
+                            }
+                        }
+                        let start = at + 4;
+                        let end = text[start..].find('"').unwrap() + start;
+                        keys.insert(text[start..end].to_string());
+                        i = end;
+                    }
+                }
+            }
+        }
+        assert!(keys.len() > 100, "t! 键扫描异常（仅 {} 个）", keys.len());
+        for key in keys {
             for loc in ["zh", "en"] {
                 rust_i18n::set_locale(loc);
-                let s = rust_i18n::t!(key);
-                assert_ne!(&*s, key, "locale {loc} 缺键 {key}");
+                let s = rust_i18n::t!(&key);
+                assert_ne!(&*s, &key, "locale {loc} 缺键 {key}");
             }
         }
     }

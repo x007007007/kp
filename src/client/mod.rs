@@ -404,7 +404,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
                 eprintln!("{}", t!("msg.restart_followed"));
                 continue;
             }
-            return print_exit_summary(&ei);
+            return print_exit_summary(name, &ei);
         }
         // attach 先于 WaitExit 返回：可能是用户 detach，也可能是 restart 进行中。
         // 以实例纪元判定：running 且 started_at_ms 变了 → 跟随；相同 → 用户 detach。
@@ -438,7 +438,7 @@ fn attach_session(name: &str, attach_args: &[String]) -> i32 {
         }
         if session_ended {
             if let Ok(Ok(ei)) = rx.recv_timeout(Duration::from_secs(5)) {
-                return print_exit_summary(&ei);
+                return print_exit_summary(name, &ei);
             }
             eprintln!("{}", t!("msg.session_ended"));
             return if attach_status.success() {
@@ -475,7 +475,27 @@ fn wait_follow(name: &str, base: &mut Option<u64>) -> bool {
     false
 }
 
-fn print_exit_summary(ei: &ExitInfo) -> i32 {
+/// 退出摘要 + 快速退出回放。瞬间退出的会话（如 `npm run dev` 起动即报错），
+/// attach 与退出竞态时常来不及把 PTY 输出送到终端——失败原因只落在会话日志里。
+/// 这里把日志尾部直接回显到交互，免去翻 `kpm logs`。
+fn print_exit_summary(name: &str, ei: &ExitInfo) -> i32 {
+    if ei.duration_ms < 2_000 {
+        let log = paths::logs_dir()
+            .ok()
+            .map(|d| d.join(format!("{name}.log")));
+        if let Some(p) = log {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                let lines: Vec<&str> = text.lines().collect();
+                let skip = lines.len().saturating_sub(15);
+                if skip < lines.len() {
+                    eprintln!("{}", t!("msg.log_replay"));
+                    for l in &lines[skip..] {
+                        eprintln!(" {l}");
+                    }
+                }
+            }
+        }
+    }
     eprintln!(
         "{}",
         t!(
@@ -774,8 +794,12 @@ pub fn cmd_stop(name: Option<String>, all: bool) -> i32 {
         Ok(Response::Stopped(list)) => {
             for (n, code) in list {
                 println!(
-                    "✓ 已停止 {n}（退出码 {}）",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                    "{}",
+                    t!(
+                        "msg.stopped",
+                        name = n,
+                        code = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                    )
                 );
             }
             0

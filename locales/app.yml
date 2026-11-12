@@ -180,10 +180,6 @@ _version: 2
   en: "environment variable not set: %{name}"
   zh: "环境变量未设置: %{name}"
 
-"err.env_missing_prefix":
-  en: "environment variable not set: "
-  zh: "环境变量未设置: "
-
 "err.first_hello":
   en: "first frame must be Hello"
   zh: "首帧必须是 Hello"
@@ -455,3 +451,9 @@ _version: 2
 "status.status":
   en: "status"
   zh: "状态"
+"msg.stopped":
+  en: "✓ stopped %{name} (exit code %{code})"
+  zh: "✓ 已停止 %{name}（退出码 %{code}）"
+"msg.log_replay":
+  en: "kp: recent output (tail of session log):"
+  zh: "kp: 最近输出（会话日志尾部）："
